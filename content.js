@@ -7,6 +7,23 @@ class QuestNavigator {
     this.aiHelper = new AIHelper();
     this.setupMessageListener();
     this.log('QuestNavigator initialized');
+    this.restoreState();
+  }
+
+  async restoreState() {
+    // ページ遷移後も状態を復元
+    const result = await chrome.storage.local.get(['isRunning', 'delay']);
+    if (result.isRunning) {
+      this.log('Restoring running state after page navigation');
+      this.isRunning = true;
+      if (result.delay) {
+        this.delay = result.delay;
+      }
+      // 少し待ってから自動実行を再開
+      setTimeout(() => {
+        this.run();
+      }, 1000);
+    }
   }
 
   log(message, data = null) {
@@ -35,19 +52,26 @@ class QuestNavigator {
     });
   }
 
-  start() {
+  async start() {
     if (this.isRunning) {
       this.log('Already running');
       return;
     }
     this.isRunning = true;
     this.log('Starting auto navigation');
+
+    // 状態を保存（ページ遷移後も継続するため）
+    await chrome.storage.local.set({ isRunning: true });
+
     this.run();
   }
 
-  stop() {
+  async stop() {
     this.isRunning = false;
     this.log('Stopping auto navigation');
+
+    // 状態を保存（ページ遷移後も停止を維持）
+    await chrome.storage.local.set({ isRunning: false });
   }
 
   async run() {

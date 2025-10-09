@@ -333,17 +333,29 @@ class AIHelper {
     }
 
     // AIが____の部分だけを返した場合（穴埋めの内容だけ）
-    // 元のコードの____を置換する
+    // 例: "nunique, unique" や "nunique()\nunique()" など
     if (!code.includes('import') && !code.includes('def')) {
       console.log('[AIHelper] AI returned only fill-in content, replacing ____ in original code');
-      const lines = code.split('\n');
-      let modifiedCode = originalCode;
 
-      for (const line of lines) {
-        if (line.trim() && !line.includes('____')) {
-          // ____を1つずつ置換
-          modifiedCode = modifiedCode.replace('____', line.trim());
-        }
+      // カンマ区切りまたは改行で分割
+      let fillIns = [];
+      if (code.includes(',')) {
+        // カンマ区切りの場合
+        fillIns = code.split(',').map(s => s.trim()).filter(s => s.length > 0);
+      } else if (code.includes('\n')) {
+        // 改行区切りの場合
+        fillIns = code.split('\n').map(s => s.trim()).filter(s => s.length > 0 && !s.includes('____'));
+      } else {
+        // 単一の値の場合
+        fillIns = [code];
+      }
+
+      console.log('[AIHelper] Fill-in values:', fillIns);
+
+      let modifiedCode = originalCode;
+      for (const fillIn of fillIns) {
+        // ____を1つずつ置換
+        modifiedCode = modifiedCode.replace('____', fillIn);
       }
 
       return modifiedCode;

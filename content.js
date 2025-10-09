@@ -720,7 +720,27 @@ class QuestNavigator {
 
     this.log('Attempting to cache editor instance...');
 
-    // 方法1: ace.edit() で取得
+    // 方法1: ページコンテキストから直接取得（最も確実）
+    try {
+      const result = this.executeInPageContext(() => {
+        const elem = document.querySelector('#operation-editor');
+        return elem && elem.env && elem.env.editor ? true : false;
+      });
+
+      if (result) {
+        // DOM要素から取得
+        const operationEditor = document.querySelector('#operation-editor');
+        if (operationEditor && operationEditor.env && operationEditor.env.editor) {
+          this.editorInstance = operationEditor.env.editor;
+          this.log('✓ Cached editor instance via #operation-editor.env.editor (page context)');
+          return;
+        }
+      }
+    } catch (e) {
+      this.log('Page context check failed:', e.message);
+    }
+
+    // 方法2: ace.edit() で取得
     if (typeof ace !== 'undefined' && ace.edit) {
       try {
         const editor = ace.edit('operation-editor');
@@ -734,7 +754,7 @@ class QuestNavigator {
       }
     }
 
-    // 方法2: DOM要素から取得
+    // 方法3: DOM要素から取得
     const operationEditor = document.querySelector('#operation-editor');
     if (operationEditor && operationEditor.env && operationEditor.env.editor) {
       this.editorInstance = operationEditor.env.editor;
@@ -742,7 +762,7 @@ class QuestNavigator {
       return;
     }
 
-    // 方法3: .ace_editor クラスから取得
+    // 方法4: .ace_editor クラスから取得
     const aceElements = document.querySelectorAll('.ace_editor');
     for (const elem of aceElements) {
       if (elem.env && elem.env.editor) {
@@ -755,8 +775,42 @@ class QuestNavigator {
     this.log('✗ Could not cache editor instance');
   }
 
+  executeInPageContext(func) {
+    // ページのコンテキストで関数を実行
+    const script = document.createElement('script');
+    script.textContent = `
+      (function() {
+        try {
+          const result = (${func.toString()})();
+          document.body.setAttribute('data-page-context-result', JSON.stringify(result));
+        } catch (e) {
+          document.body.setAttribute('data-page-context-result', JSON.stringify({error: e.message}));
+        }
+      })();
+    `;
+    document.documentElement.appendChild(script);
+    script.remove();
+
+    const resultStr = document.body.getAttribute('data-page-context-result');
+    document.body.removeAttribute('data-page-context-result');
+
+    return resultStr ? JSON.parse(resultStr) : null;
+  }
+
   setAceEditorContent(code) {
     this.log('Attempting to set Ace Editor content...');
+
+    // 方法0: ページコンテキストでスクリプトを直接実行（最も確実）
+    try {
+      this.log('Trying page context injection...');
+      const success = this.setEditorContentViaPageContext(code);
+      if (success) {
+        this.log('✓ Set content via page context injection');
+        return true;
+      }
+    } catch (e) {
+      this.log('✗ Page context injection failed:', e.message);
+    }
 
     // まず、キャッシュを試みる（まだキャッシュされていない場合）
     if (!this.editorInstance) {
@@ -777,27 +831,7 @@ class QuestNavigator {
       }
     }
 
-    // 方法2: ace.edit() で直接エディターを取得して設定
-    if (typeof ace !== 'undefined' && ace.edit) {
-      this.log('Trying ace.edit("operation-editor")...');
-      try {
-        const editor = ace.edit('operation-editor');
-        if (editor && editor.setValue) {
-          editor.setValue(code, -1);
-          this.log('✓ Set content via ace.edit("operation-editor")');
-          this.editorInstance = editor; // キャッシュ
-          return true;
-        } else {
-          this.log('✗ ace.edit returned invalid editor');
-        }
-      } catch (e) {
-        this.log('✗ Failed to set via ace.edit("operation-editor"):', e.message);
-      }
-    } else {
-      this.log('✗ ace.edit is not available');
-    }
-
-    // 方法3: #operation-editor から設定
+    // 方法2: #operation-editor から設定
     const operationEditor = document.querySelector('#operation-editor');
     if (operationEditor) {
       this.log('Found #operation-editor element');
@@ -817,7 +851,7 @@ class QuestNavigator {
       this.log('✗ #operation-editor element not found');
     }
 
-    // 方法4: DOM要素から設定 (.ace_editor クラス)
+    // 方法3: DOM要素から設定 (.ace_editor クラス)
     const aceElements = document.querySelectorAll('.ace_editor');
     this.log(`Found ${aceElements.length} .ace_editor elements`);
     for (const elem of aceElements) {
@@ -837,6 +871,34 @@ class QuestNavigator {
 
     this.log('✗ Could not set editor content - all methods failed');
     return false;
+  }
+
+  setEditorContentViaPageContext(code) {
+    // ページのコンテキストで直接エディターを操作
+    const script = document.createElement('script');
+    const escapedCode = code.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+    script.textContent = `
+      (function() {
+        try {
+          const elem = document.querySelector('#operation-editor');
+          if (elem && elem.env && elem.env.editor) {
+            elem.env.editor.setValue(\`${escapedCode}\`, -1);
+            document.body.setAttribute('data-editor-set-result', 'success');
+          } else {
+            document.body.setAttribute('data-editor-set-result', 'no-editor');
+          }
+        } catch (e) {
+          document.body.setAttribute('data-editor-set-result', 'error:' + e.message);
+        }
+      })();
+    `;
+    document.documentElement.appendChild(script);
+    script.remove();
+
+    const result = document.body.getAttribute('data-editor-set-result');
+    document.body.removeAttribute('data-editor-set-result');
+
+    return result === 'success';
   }
 
   async clickExecuteButton() {

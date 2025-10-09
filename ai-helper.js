@@ -184,7 +184,7 @@ class AIHelper {
 
     // コーディング問題かどうかで maxOutputTokens を変える
     const isCodingQuestion = prompt.includes('____') || prompt.includes('コード');
-    const maxTokens = isCodingQuestion ? 500 : 100;
+    const maxTokens = isCodingQuestion ? 500 : 200; // 通常の質問も200トークンに増やす
 
     const response = await fetch(url, {
       method: 'POST',

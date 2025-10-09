@@ -96,7 +96,9 @@ class QuestNavigator {
       return;
     }
 
-    // Step 1.5: コーディング問題かチェック
+    // Step 1.5: コーディング問題かチェック（一旦無効化）
+    // TODO: エディターへの書き込み方法を修正後に有効化
+    /*
     if (this.isCodingQuestion()) {
       this.log('Coding question detected');
       if (await this.handleCodingQuestion()) {
@@ -105,6 +107,7 @@ class QuestNavigator {
         return;
       }
     }
+    */
 
     // Step 2: 問題文があるかチェック
     const questionHandled = await this.handleQuestion();
@@ -133,7 +136,7 @@ class QuestNavigator {
       await this.sleep(1500); // 採点結果を待つ
 
       // 不正解かチェック
-      if (await this.checkIfIncorrect()) {
+      if (this.checkIfIncorrect()) {
         this.log('Answer was incorrect, trying with hint');
         if (await this.handleIncorrectAnswer()) {
           return;

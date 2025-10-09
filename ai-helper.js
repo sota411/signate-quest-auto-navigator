@@ -40,7 +40,7 @@ class AIHelper {
     }
 
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${this.apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${this.apiKey}`;
 
       const response = await fetch(url, {
         method: 'POST',
@@ -179,7 +179,7 @@ class AIHelper {
       throw new Error('API key not configured');
     }
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${this.apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${this.apiKey}`;
 
     // コーディング問題かどうかで maxOutputTokens を変える
     const isCodingQuestion = prompt.includes('____') || prompt.includes('コード');

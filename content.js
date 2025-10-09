@@ -96,6 +96,16 @@ class QuestNavigator {
       return;
     }
 
+    // Step 1.5: コーディング問題かチェック
+    if (this.isCodingQuestion()) {
+      this.log('Coding question detected');
+      if (await this.handleCodingQuestion()) {
+        this.log('Handled coding question');
+        await this.sleep(1000);
+        return;
+      }
+    }
+
     // Step 2: 問題文があるかチェック
     const questionHandled = await this.handleQuestion();
     if (questionHandled) {
@@ -524,6 +534,279 @@ class QuestNavigator {
 
   sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  // ========== コーディング問題の処理 ==========
+
+  isCodingQuestion() {
+    // 複数のセレクタでAce Editorの存在をチェック
+    const aceSelectors = [
+      '.ace_editor',
+      '.ace_content',
+      '#editor.ace_editor',
+      'pre#editor',
+      '[id*="ace_editor"]',
+      '[class*="ace_editor"]'
+    ];
+
+    for (const selector of aceSelectors) {
+      const aceEditor = document.querySelector(selector);
+      if (aceEditor) {
+        this.log(`Ace Editor detected with selector: ${selector}`);
+        return true;
+      }
+    }
+
+    // 「ソースコード」というテキストの存在をチェック
+    const pageText = document.body.textContent;
+    if (pageText.includes('ソースコード')) {
+      this.log('Source code text detected');
+      return true;
+    }
+
+    // デバッグ: ページにどんな要素があるかログ出力
+    const editorElement = document.querySelector('#editor');
+    if (editorElement) {
+      this.log('Found #editor element:', {
+        tagName: editorElement.tagName,
+        className: editorElement.className,
+        id: editorElement.id
+      });
+    }
+
+    // preタグの存在チェック（コーディング問題の可能性）
+    const preElements = document.querySelectorAll('pre');
+    if (preElements.length > 0) {
+      this.log(`Found ${preElements.length} pre elements on page`);
+      for (const pre of preElements) {
+        if (pre.id === 'editor' || pre.className.includes('editor')) {
+          this.log('Found editor pre element:', pre.id, pre.className);
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  async handleCodingQuestion() {
+    try {
+      // 1. 問題文を取得
+      const questionText = this.extractQuestionText();
+      this.log('Question text:', questionText);
+
+      // 2. Ace Editorからコードを取得
+      const code = this.getAceEditorContent();
+      if (!code) {
+        this.log('Could not get code from Ace Editor');
+        return false;
+      }
+      this.log('Original code:', code);
+
+      // 3. 穴埋め箇所（____）が存在するかチェック
+      if (!code.includes('____')) {
+        this.log('No blanks found in code, skipping');
+        return false;
+      }
+
+      // 4. Geminiに問い合わせて穴埋め部分のコードを取得
+      const completedCode = await this.aiHelper.completeCodingQuestion(questionText, code);
+      this.log('Completed code:', completedCode);
+
+      // 5. Ace Editorにコードを入力
+      if (!this.setAceEditorContent(completedCode)) {
+        this.log('Failed to set code in Ace Editor');
+        return false;
+      }
+
+      await this.sleep(500);
+
+      // 6. 実行ボタンを押す
+      if (!await this.clickExecuteButton()) {
+        this.log('Failed to click execute button');
+        return false;
+      }
+
+      await this.sleep(2000); // 実行結果を待つ
+
+      // 7. 実行結果を取得
+      const result = this.getExecutionResult();
+      this.log('Execution result:', result);
+
+      // 8. 結果から答えを導く
+      const answer = await this.aiHelper.deriveAnswerFromResult(questionText, result);
+      this.log('Derived answer:', answer);
+
+      // 9. 選択肢を選ぶ
+      const choices = this.extractChoices();
+      if (choices.length > 0) {
+        const answerIndex = this.findMatchingChoice(choices, answer);
+        if (answerIndex !== -1) {
+          await this.selectAnswer(choices, answerIndex);
+          this.log('Selected answer:', answerIndex);
+          return true;
+        }
+      }
+
+      return false;
+    } catch (error) {
+      this.log('Error handling coding question:', error);
+      return false;
+    }
+  }
+
+  getAceEditorContent() {
+    // 方法1: グローバルaceオブジェクトから取得
+    if (typeof ace !== 'undefined') {
+      this.log('Found global ace object');
+      if (ace.edit && ace.edit.editors) {
+        const editors = ace.edit.editors;
+        this.log(`Found ${editors ? editors.length : 0} ace editors`);
+        if (editors && editors.length > 0) {
+          const content = editors[0].getValue();
+          this.log('Got content from ace.edit.editors[0]');
+          return content;
+        }
+      }
+    }
+
+    // 方法2: DOM要素から取得 (.ace_editor クラス)
+    const aceElements = document.querySelectorAll('.ace_editor');
+    this.log(`Found ${aceElements.length} .ace_editor elements`);
+    for (const elem of aceElements) {
+      if (elem.env && elem.env.editor) {
+        const content = elem.env.editor.getValue();
+        this.log('Got content from .ace_editor element');
+        return content;
+      }
+    }
+
+    // 方法3: #editor 要素から取得
+    const editorElement = document.querySelector('#editor');
+    if (editorElement) {
+      this.log('Found #editor element');
+      if (editorElement.env && editorElement.env.editor) {
+        const content = editorElement.env.editor.getValue();
+        this.log('Got content from #editor.env.editor');
+        return content;
+      }
+    }
+
+    // 方法4: テキストレイヤーから直接取得
+    const textLayer = document.querySelector('.ace_text-layer');
+    if (textLayer) {
+      this.log('Got content from .ace_text-layer');
+      return textLayer.textContent;
+    }
+
+    // 方法5: pre#editor タグから直接取得（Ace Editor初期化前）
+    const preEditor = document.querySelector('pre#editor');
+    if (preEditor) {
+      this.log('Got content from pre#editor');
+      return preEditor.textContent;
+    }
+
+    this.log('Could not find any editor content');
+    return null;
+  }
+
+  setAceEditorContent(code) {
+    // 方法1: グローバルaceオブジェクトから設定
+    if (typeof ace !== 'undefined') {
+      if (ace.edit && ace.edit.editors) {
+        const editors = ace.edit.editors;
+        if (editors && editors.length > 0) {
+          editors[0].setValue(code, -1); // -1 でカーソルを先頭に
+          this.log('Set content via ace.edit.editors[0]');
+          return true;
+        }
+      }
+    }
+
+    // 方法2: DOM要素から設定 (.ace_editor クラス)
+    const aceElements = document.querySelectorAll('.ace_editor');
+    for (const elem of aceElements) {
+      if (elem.env && elem.env.editor) {
+        elem.env.editor.setValue(code, -1);
+        this.log('Set content via .ace_editor element');
+        return true;
+      }
+    }
+
+    // 方法3: #editor 要素から設定
+    const editorElement = document.querySelector('#editor');
+    if (editorElement) {
+      if (editorElement.env && editorElement.env.editor) {
+        editorElement.env.editor.setValue(code, -1);
+        this.log('Set content via #editor.env.editor');
+        return true;
+      }
+    }
+
+    this.log('Could not set editor content');
+    return false;
+  }
+
+  async clickExecuteButton() {
+    // 「試す」「実行」などのボタンを探す
+    const buttonTexts = ['試す', '実行', 'Run', 'Execute'];
+
+    const buttons = document.querySelectorAll('button, a, input[type="button"]');
+    for (const button of buttons) {
+      const text = button.textContent.trim();
+      if (buttonTexts.some(btnText => text.includes(btnText)) && this.isVisible(button)) {
+        this.log('Found execute button:', text);
+        button.click();
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  getExecutionResult() {
+    // 実行結果エリアを探す
+    const selectors = [
+      '.execution-result',
+      '.output',
+      '.result',
+      '[class*="result"]',
+      '[class*="output"]'
+    ];
+
+    for (const selector of selectors) {
+      const elem = document.querySelector(selector);
+      if (elem && this.isVisible(elem)) {
+        return elem.textContent.trim();
+      }
+    }
+
+    return null;
+  }
+
+  findMatchingChoice(choices, answer) {
+    // 答えと一致する選択肢を探す
+    const answerStr = String(answer).trim();
+
+    for (let i = 0; i < choices.length; i++) {
+      const choiceText = choices[i].text.trim();
+      if (choiceText === answerStr || choiceText.includes(answerStr)) {
+        return i;
+      }
+    }
+
+    // 数値の場合は、近い値を探す
+    const answerNum = parseFloat(answerStr);
+    if (!isNaN(answerNum)) {
+      for (let i = 0; i < choices.length; i++) {
+        const choiceNum = parseFloat(choices[i].text);
+        if (!isNaN(choiceNum) && Math.abs(choiceNum - answerNum) < 0.01) {
+          return i;
+        }
+      }
+    }
+
+    return -1;
   }
 }
 

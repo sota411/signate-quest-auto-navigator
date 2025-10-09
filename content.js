@@ -539,53 +539,49 @@ class QuestNavigator {
   // ========== コーディング問題の処理 ==========
 
   isCodingQuestion() {
-    // 複数のセレクタでAce Editorの存在をチェック
+    this.log('Checking if this is a coding question...');
+
+    // 1. 最も確実な方法: .ace_editor クラスの存在をチェック
+    const aceEditor = document.querySelector('.ace_editor');
+    if (aceEditor) {
+      this.log(`✓ Ace Editor detected (.ace_editor found):`, {
+        id: aceEditor.id,
+        className: aceEditor.className
+      });
+      return true;
+    }
+
+    // 2. 特定のエディターIDをチェック
+    const operationEditor = document.querySelector('#operation-editor');
+    if (operationEditor) {
+      this.log('✓ Operation Editor detected (#operation-editor found)');
+      return true;
+    }
+
+    // 3. p-editor-operation クラスをチェック
+    const pEditorOperation = document.querySelector('.p-editor-operation');
+    if (pEditorOperation) {
+      this.log('✓ Editor detected (.p-editor-operation found)');
+      return true;
+    }
+
+    // 4. その他のセレクタ
     const aceSelectors = [
-      '.ace_editor',
       '.ace_content',
       '#editor.ace_editor',
       'pre#editor',
-      '[id*="ace_editor"]',
-      '[class*="ace_editor"]'
+      '[id*="editor"]'
     ];
 
     for (const selector of aceSelectors) {
-      const aceEditor = document.querySelector(selector);
-      if (aceEditor) {
-        this.log(`Ace Editor detected with selector: ${selector}`);
+      const elem = document.querySelector(selector);
+      if (elem && elem.classList && (elem.classList.contains('ace_editor') || elem.classList.contains('p-editor-operation'))) {
+        this.log(`✓ Editor detected with selector: ${selector}`);
         return true;
       }
     }
 
-    // 「ソースコード」というテキストの存在をチェック
-    const pageText = document.body.textContent;
-    if (pageText.includes('ソースコード')) {
-      this.log('Source code text detected');
-      return true;
-    }
-
-    // デバッグ: ページにどんな要素があるかログ出力
-    const editorElement = document.querySelector('#editor');
-    if (editorElement) {
-      this.log('Found #editor element:', {
-        tagName: editorElement.tagName,
-        className: editorElement.className,
-        id: editorElement.id
-      });
-    }
-
-    // preタグの存在チェック（コーディング問題の可能性）
-    const preElements = document.querySelectorAll('pre');
-    if (preElements.length > 0) {
-      this.log(`Found ${preElements.length} pre elements on page`);
-      for (const pre of preElements) {
-        if (pre.id === 'editor' || pre.className.includes('editor')) {
-          this.log('Found editor pre element:', pre.id, pre.className);
-          return true;
-        }
-      }
-    }
-
+    this.log('✗ No coding question detected');
     return false;
   }
 
@@ -656,94 +652,120 @@ class QuestNavigator {
   }
 
   getAceEditorContent() {
+    this.log('Attempting to get Ace Editor content...');
+
     // 方法1: グローバルaceオブジェクトから取得
     if (typeof ace !== 'undefined') {
-      this.log('Found global ace object');
+      this.log('✓ Found global ace object');
       if (ace.edit && ace.edit.editors) {
         const editors = ace.edit.editors;
         this.log(`Found ${editors ? editors.length : 0} ace editors`);
         if (editors && editors.length > 0) {
           const content = editors[0].getValue();
-          this.log('Got content from ace.edit.editors[0]');
+          this.log('✓ Got content from ace.edit.editors[0]:', content.substring(0, 50) + '...');
           return content;
         }
       }
     }
 
-    // 方法2: DOM要素から取得 (.ace_editor クラス)
+    // 方法2: #operation-editor から取得
+    const operationEditor = document.querySelector('#operation-editor');
+    if (operationEditor) {
+      this.log('✓ Found #operation-editor');
+      if (operationEditor.env && operationEditor.env.editor) {
+        const content = operationEditor.env.editor.getValue();
+        this.log('✓ Got content from #operation-editor:', content.substring(0, 50) + '...');
+        return content;
+      }
+    }
+
+    // 方法3: DOM要素から取得 (.ace_editor クラス)
     const aceElements = document.querySelectorAll('.ace_editor');
     this.log(`Found ${aceElements.length} .ace_editor elements`);
     for (const elem of aceElements) {
       if (elem.env && elem.env.editor) {
         const content = elem.env.editor.getValue();
-        this.log('Got content from .ace_editor element');
+        this.log('✓ Got content from .ace_editor element:', content.substring(0, 50) + '...');
         return content;
       }
     }
 
-    // 方法3: #editor 要素から取得
+    // 方法4: #editor 要素から取得
     const editorElement = document.querySelector('#editor');
     if (editorElement) {
       this.log('Found #editor element');
       if (editorElement.env && editorElement.env.editor) {
         const content = editorElement.env.editor.getValue();
-        this.log('Got content from #editor.env.editor');
+        this.log('✓ Got content from #editor.env.editor');
         return content;
       }
     }
 
-    // 方法4: テキストレイヤーから直接取得
+    // 方法5: テキストレイヤーから直接取得
     const textLayer = document.querySelector('.ace_text-layer');
     if (textLayer) {
-      this.log('Got content from .ace_text-layer');
-      return textLayer.textContent;
+      const content = textLayer.textContent;
+      this.log('✓ Got content from .ace_text-layer:', content.substring(0, 50) + '...');
+      return content;
     }
 
-    // 方法5: pre#editor タグから直接取得（Ace Editor初期化前）
+    // 方法6: pre#editor タグから直接取得（Ace Editor初期化前）
     const preEditor = document.querySelector('pre#editor');
     if (preEditor) {
       this.log('Got content from pre#editor');
       return preEditor.textContent;
     }
 
-    this.log('Could not find any editor content');
+    this.log('✗ Could not find any editor content');
     return null;
   }
 
   setAceEditorContent(code) {
+    this.log('Attempting to set Ace Editor content...');
+
     // 方法1: グローバルaceオブジェクトから設定
     if (typeof ace !== 'undefined') {
       if (ace.edit && ace.edit.editors) {
         const editors = ace.edit.editors;
         if (editors && editors.length > 0) {
           editors[0].setValue(code, -1); // -1 でカーソルを先頭に
-          this.log('Set content via ace.edit.editors[0]');
+          this.log('✓ Set content via ace.edit.editors[0]');
           return true;
         }
       }
     }
 
-    // 方法2: DOM要素から設定 (.ace_editor クラス)
+    // 方法2: #operation-editor から設定
+    const operationEditor = document.querySelector('#operation-editor');
+    if (operationEditor) {
+      if (operationEditor.env && operationEditor.env.editor) {
+        operationEditor.env.editor.setValue(code, -1);
+        this.log('✓ Set content via #operation-editor');
+        return true;
+      }
+    }
+
+    // 方法3: DOM要素から設定 (.ace_editor クラス)
     const aceElements = document.querySelectorAll('.ace_editor');
     for (const elem of aceElements) {
       if (elem.env && elem.env.editor) {
         elem.env.editor.setValue(code, -1);
-        this.log('Set content via .ace_editor element');
+        this.log('✓ Set content via .ace_editor element');
         return true;
       }
     }
 
-    // 方法3: #editor 要素から設定
+    // 方法4: #editor 要素から設定
     const editorElement = document.querySelector('#editor');
     if (editorElement) {
       if (editorElement.env && editorElement.env.editor) {
         editorElement.env.editor.setValue(code, -1);
-        this.log('Set content via #editor.env.editor');
+        this.log('✓ Set content via #editor.env.editor');
         return true;
       }
     }
 
-    this.log('Could not set editor content');
+    this.log('✗ Could not set editor content');
     return false;
   }
 

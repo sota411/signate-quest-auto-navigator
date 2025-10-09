@@ -654,6 +654,9 @@ class QuestNavigator {
   getAceEditorContent() {
     this.log('Attempting to get Ace Editor content...');
 
+    // まず、エディターインスタンスの取得を試みる（最優先）
+    this.cacheEditorInstance();
+
     // 方法1: グローバルaceオブジェクトから取得
     if (typeof ace !== 'undefined' && ace.edit) {
       this.log('✓ Found global ace object');
@@ -669,7 +672,7 @@ class QuestNavigator {
           return content;
         }
       } catch (e) {
-        this.log('Could not get editor via ace.edit("operation-editor")');
+        this.log('Could not get editor via ace.edit("operation-editor"):', e.message);
       }
     }
 
@@ -678,17 +681,6 @@ class QuestNavigator {
     if (textLayer) {
       const content = textLayer.textContent;
       this.log('✓ Got content from .ace_text-layer:', content.substring(0, 50) + '...');
-
-      // エディターインスタンスも取得を試みる
-      if (typeof ace !== 'undefined' && ace.edit) {
-        try {
-          this.editorInstance = ace.edit('operation-editor');
-          this.log('✓ Also cached editor instance');
-        } catch (e) {
-          this.log('Could not cache editor instance');
-        }
-      }
-
       return content;
     }
 
@@ -720,58 +712,130 @@ class QuestNavigator {
     return null;
   }
 
+  cacheEditorInstance() {
+    // エディターインスタンスをキャッシュする専用メソッド
+    if (this.editorInstance) {
+      return; // 既にキャッシュ済み
+    }
+
+    this.log('Attempting to cache editor instance...');
+
+    // 方法1: ace.edit() で取得
+    if (typeof ace !== 'undefined' && ace.edit) {
+      try {
+        const editor = ace.edit('operation-editor');
+        if (editor && editor.getValue) {
+          this.editorInstance = editor;
+          this.log('✓ Cached editor instance via ace.edit("operation-editor")');
+          return;
+        }
+      } catch (e) {
+        // エラーは無視（他の方法を試す）
+      }
+    }
+
+    // 方法2: DOM要素から取得
+    const operationEditor = document.querySelector('#operation-editor');
+    if (operationEditor && operationEditor.env && operationEditor.env.editor) {
+      this.editorInstance = operationEditor.env.editor;
+      this.log('✓ Cached editor instance via #operation-editor.env.editor');
+      return;
+    }
+
+    // 方法3: .ace_editor クラスから取得
+    const aceElements = document.querySelectorAll('.ace_editor');
+    for (const elem of aceElements) {
+      if (elem.env && elem.env.editor) {
+        this.editorInstance = elem.env.editor;
+        this.log('✓ Cached editor instance via .ace_editor element');
+        return;
+      }
+    }
+
+    this.log('✗ Could not cache editor instance');
+  }
+
   setAceEditorContent(code) {
     this.log('Attempting to set Ace Editor content...');
 
+    // まず、キャッシュを試みる（まだキャッシュされていない場合）
+    if (!this.editorInstance) {
+      this.log('No cached instance, attempting to cache...');
+      this.cacheEditorInstance();
+    }
+
     // 方法1: キャッシュされたエディターインスタンスを使用
     if (this.editorInstance) {
+      this.log('Using cached editor instance');
       try {
         this.editorInstance.setValue(code, -1); // -1 でカーソルを先頭に
         this.log('✓ Set content via cached editor instance');
         return true;
       } catch (e) {
-        this.log('Failed to set via cached instance:', e);
+        this.log('✗ Failed to set via cached instance:', e.message);
+        this.editorInstance = null; // キャッシュをクリア
       }
     }
 
     // 方法2: ace.edit() で直接エディターを取得して設定
     if (typeof ace !== 'undefined' && ace.edit) {
+      this.log('Trying ace.edit("operation-editor")...');
       try {
         const editor = ace.edit('operation-editor');
-        if (editor) {
+        if (editor && editor.setValue) {
           editor.setValue(code, -1);
           this.log('✓ Set content via ace.edit("operation-editor")');
           this.editorInstance = editor; // キャッシュ
           return true;
+        } else {
+          this.log('✗ ace.edit returned invalid editor');
         }
       } catch (e) {
-        this.log('Failed to set via ace.edit("operation-editor"):', e);
+        this.log('✗ Failed to set via ace.edit("operation-editor"):', e.message);
       }
+    } else {
+      this.log('✗ ace.edit is not available');
     }
 
     // 方法3: #operation-editor から設定
     const operationEditor = document.querySelector('#operation-editor');
     if (operationEditor) {
+      this.log('Found #operation-editor element');
       if (operationEditor.env && operationEditor.env.editor) {
-        operationEditor.env.editor.setValue(code, -1);
-        this.log('✓ Set content via #operation-editor.env.editor');
-        this.editorInstance = operationEditor.env.editor;
-        return true;
+        try {
+          operationEditor.env.editor.setValue(code, -1);
+          this.log('✓ Set content via #operation-editor.env.editor');
+          this.editorInstance = operationEditor.env.editor;
+          return true;
+        } catch (e) {
+          this.log('✗ Failed via #operation-editor.env.editor:', e.message);
+        }
+      } else {
+        this.log('✗ #operation-editor.env.editor not found');
       }
+    } else {
+      this.log('✗ #operation-editor element not found');
     }
 
     // 方法4: DOM要素から設定 (.ace_editor クラス)
     const aceElements = document.querySelectorAll('.ace_editor');
+    this.log(`Found ${aceElements.length} .ace_editor elements`);
     for (const elem of aceElements) {
       if (elem.env && elem.env.editor) {
-        elem.env.editor.setValue(code, -1);
-        this.log('✓ Set content via .ace_editor element');
-        this.editorInstance = elem.env.editor;
-        return true;
+        try {
+          elem.env.editor.setValue(code, -1);
+          this.log('✓ Set content via .ace_editor element');
+          this.editorInstance = elem.env.editor;
+          return true;
+        } catch (e) {
+          this.log('✗ Failed via .ace_editor element:', e.message);
+        }
+      } else {
+        this.log('✗ .ace_editor element has no env.editor');
       }
     }
 
-    this.log('✗ Could not set editor content');
+    this.log('✗ Could not set editor content - all methods failed');
     return false;
   }
 

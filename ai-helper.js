@@ -5,6 +5,7 @@ class AIHelper {
     this.apiKey = null;
     this.isAvailable = false;
     this.statusMessage = '未設定';
+    this.modelName = 'gemini-2.5-flash';
     this.loadApiKey();
   }
 
@@ -40,24 +41,15 @@ class AIHelper {
     }
 
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${this.apiKey}`;
+      const url = this.getApiEndpoint();
 
       const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'x-goog-api-key': this.apiKey,
         },
-        body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: 'test'
-            }]
-          }],
-          generationConfig: {
-            temperature: 0.1,
-            maxOutputTokens: 10,
-          }
-        })
+      body: JSON.stringify(this.buildRequestPayload('test', 10))
       });
 
       if (response.ok) {
@@ -179,24 +171,15 @@ class AIHelper {
       throw new Error('API key not configured');
     }
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${this.apiKey}`;
+    const url = this.getApiEndpoint();
 
     const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'x-goog-api-key': this.apiKey,
       },
-      body: JSON.stringify({
-        contents: [{
-          parts: [{
-            text: prompt
-          }]
-        }],
-        generationConfig: {
-          temperature: 0.1,
-          maxOutputTokens: 100,
-        }
-      })
+      body: JSON.stringify(this.buildRequestPayload(prompt, 2048))
     });
 
     if (!response.ok) {
@@ -206,12 +189,85 @@ class AIHelper {
 
     const data = await response.json();
 
-    if (data.candidates && data.candidates.length > 0) {
-      const text = data.candidates[0].content.parts[0].text;
-      return text.trim();
+    if (Array.isArray(data.candidates)) {
+      for (const candidate of data.candidates) {
+        const text = this.extractTextFromCandidate(candidate);
+        if (text) {
+          return text;
+        }
+      }
     }
 
-    throw new Error('No response from API');
+    if (data.promptFeedback?.blockReason) {
+      throw new Error(`No textual content returned (block reason: ${data.promptFeedback.blockReason})`);
+    }
+
+    console.warn('[AIHelper] No textual content in response', JSON.stringify(data, null, 2));
+    throw new Error('No textual content returned from API');
+  }
+
+  extractTextFromCandidate(candidate) {
+    if (!candidate) {
+      return '';
+    }
+
+    const segments = [];
+    const content = candidate.content;
+
+    if (Array.isArray(content?.parts)) {
+      for (const part of content.parts) {
+        if (typeof part?.text === 'string') {
+          segments.push(part.text);
+        }
+      }
+    }
+
+    if (Array.isArray(content)) {
+      for (const part of content) {
+        if (typeof part?.text === 'string') {
+          segments.push(part.text);
+        } else if (typeof part === 'string') {
+          segments.push(part);
+        }
+      }
+    }
+
+    if (typeof content?.text === 'string') {
+      segments.push(content.text);
+    }
+
+    if (typeof candidate.output === 'string') {
+      segments.push(candidate.output);
+    }
+
+    if (typeof candidate.text === 'string') {
+      segments.push(candidate.text);
+    }
+
+    return segments
+      .map(segment => segment.trim())
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  buildRequestPayload(text, maxOutputTokens = 200) {
+    return {
+      contents: [{
+        role: 'user',
+        parts: [{
+          text
+        }]
+      }],
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens,
+        responseMimeType: 'text/plain'
+      }
+    };
+  }
+
+  getApiEndpoint() {
+    return `https://generativelanguage.googleapis.com/v1beta/models/${this.modelName}:generateContent`;
   }
 
   parseAnswer(answer, choices, questionType) {

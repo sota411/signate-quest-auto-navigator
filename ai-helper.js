@@ -6,6 +6,7 @@ class AIHelper {
     this.isAvailable = false;
     this.statusMessage = '未設定';
     this.modelName = 'gemini-2.5-flash';
+    this.codingModelName = 'gemini-2.5-pro';
     this.loadApiKey();
   }
 
@@ -88,7 +89,10 @@ class AIHelper {
 
     try {
       const prompt = this.buildPrompt(questionText, choices, questionType);
-      const answer = await this.queryGemini(prompt, 'gemini-2.5-flash'); // 初回は高速モデル
+      const answer = await this.queryGemini(prompt, {
+        modelName: this.modelName,
+        maxOutputTokens: 4096
+      });
       return this.parseAnswer(answer, choices, questionType);
     } catch (error) {
       console.error('[AIHelper] Error querying AI:', error);
@@ -104,7 +108,10 @@ class AIHelper {
 
     try {
       const prompt = this.buildPromptWithHint(questionText, choices, questionType, hintText);
-      const answer = await this.queryGemini(prompt, 'gemini-2.5-pro'); // ヒント付きは最高精度モデル
+      const answer = await this.queryGemini(prompt, {
+        modelName: this.codingModelName,
+        maxOutputTokens: 4096
+      });
       return this.parseAnswer(answer, choices, questionType);
     } catch (error) {
       console.error('[AIHelper] Error querying AI with hint:', error);
@@ -166,12 +173,27 @@ class AIHelper {
     return prompt;
   }
 
-  async queryGemini(prompt, model = 'gemini-2.5-flash') {
+  async queryGemini(prompt, options = {}) {
     if (!this.apiKey) {
       throw new Error('API key not configured');
     }
 
-    const url = this.getApiEndpoint();
+    let modelName = null;
+    let maxOutputTokens = 2048;
+
+    if (typeof options === 'string') {
+      modelName = options;
+    } else if (options && typeof options === 'object') {
+      if (typeof options.modelName === 'string') {
+        modelName = options.modelName;
+      }
+      if (typeof options.maxOutputTokens === 'number') {
+        maxOutputTokens = options.maxOutputTokens;
+      }
+    }
+
+    const selectedModel = modelName || this.modelName;
+    const url = this.getApiEndpoint(selectedModel);
 
     const response = await fetch(url, {
       method: 'POST',
@@ -179,7 +201,7 @@ class AIHelper {
         'Content-Type': 'application/json',
         'x-goog-api-key': this.apiKey,
       },
-      body: JSON.stringify(this.buildRequestPayload(prompt, 2048))
+      body: JSON.stringify(this.buildRequestPayload(prompt, maxOutputTokens))
     });
 
     if (!response.ok) {
@@ -267,8 +289,8 @@ class AIHelper {
     };
   }
 
-  getApiEndpoint() {
-    return `https://generativelanguage.googleapis.com/v1beta/models/${this.modelName}:generateContent`;
+  getApiEndpoint(modelName = this.modelName) {
+    return `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
   }
 
   parseAnswer(answer, choices, questionType) {
@@ -336,15 +358,18 @@ class AIHelper {
 
   // ========== コーディング問題用のメソッド ==========
 
-  async completeCodingQuestion(questionText, code) {
+  async completeCodingQuestion(questionText, code, descriptionText = '') {
     if (!this.apiKey) {
       console.log('[AIHelper] No API key configured for coding question');
       return code; // そのまま返す
     }
 
     try {
-      const prompt = this.buildCodingPrompt(questionText, code);
-      const answer = await this.queryGemini(prompt);
+      const prompt = this.buildCodingPrompt(questionText, code, descriptionText);
+      const answer = await this.queryGemini(prompt, {
+        modelName: this.codingModelName,
+        maxOutputTokens: 4096
+      });
       return this.extractCompletedCode(answer, code);
     } catch (error) {
       console.error('[AIHelper] Error completing coding question:', error);
@@ -352,11 +377,15 @@ class AIHelper {
     }
   }
 
-  buildCodingPrompt(questionText, code) {
+  buildCodingPrompt(questionText, code, descriptionText = '') {
     let prompt = `以下のPythonコードの穴埋め問題に回答してください。\n\n`;
     prompt += `問題文:\n${questionText}\n\n`;
+    if (descriptionText) {
+      prompt += `参考情報:\n${descriptionText}\n\n`;
+    }
     prompt += `コード（____の部分を埋めてください）:\n${code}\n\n`;
     prompt += `指示:\n`;
+    prompt += `- 元のコードの構造とインデントを維持し、____ のみ適切なPythonコードに置き換えてください\n`;
     prompt += `- ____の部分に入るコードのみを考えてください\n`;
     prompt += `- 完成したコード全体を返してください\n`;
     prompt += `- コードブロック（\`\`\`）は使わず、コードのみを返してください\n`;

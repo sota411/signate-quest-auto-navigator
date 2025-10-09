@@ -96,9 +96,7 @@ class QuestNavigator {
       return;
     }
 
-    // Step 1.5: コーディング問題かチェック（一旦無効化）
-    // TODO: エディターへの書き込み方法を修正後に有効化
-    /*
+    // Step 1.5: コーディング問題かチェック
     if (this.isCodingQuestion()) {
       this.log('Coding question detected');
       if (await this.handleCodingQuestion()) {
@@ -107,7 +105,6 @@ class QuestNavigator {
         return;
       }
     }
-    */
 
     // Step 2: 問題文があるかチェック
     const questionHandled = await this.handleQuestion();
@@ -603,17 +600,55 @@ class QuestNavigator {
       this.log('Original code:', code);
 
       // 3. 穴埋め箇所（____）が存在するかチェック
-      if (!code.includes('____')) {
+      const blanks = (code.match(/____/g) || []).length;
+      if (blanks === 0) {
         this.log('No blanks found in code, skipping');
         return false;
       }
 
-      // 4. Geminiに問い合わせて穴埋め部分のコードを取得
-      const completedCode = await this.aiHelper.completeCodingQuestion(questionText, code);
-      this.log('Completed code:', completedCode);
+      let completedCode = code;
+      const descriptionText = this.extractCodingDescriptionText();
+      this.log('Description text for coding question:', descriptionText);
+
+      let usedGemini = false;
+      try {
+        const aiCompleted = await this.aiHelper.completeCodingQuestion(questionText, code, descriptionText);
+        this.log('Gemini completion result:', aiCompleted);
+        if (typeof aiCompleted === 'string') {
+          const normalized = aiCompleted.trim();
+          if (normalized && normalized !== code && !normalized.includes('____')) {
+            completedCode = normalized;
+            usedGemini = true;
+            this.log('Completed code by Gemini:', completedCode);
+          }
+        }
+      } catch (error) {
+        this.log('Gemini completion failed, fallback to heuristic fill');
+        this.log('Gemini completion error details:', error);
+      }
+
+      if (!usedGemini) {
+        const fillValues = this.getCodingFillValues(code, questionText, blanks, descriptionText);
+        this.log('Derived fill values (fallback):', fillValues);
+
+        if (fillValues.length !== blanks || fillValues.some(value => !value)) {
+          this.log('Could not derive all fill values, skipping coding question');
+          return false;
+        }
+
+        for (const value of fillValues) {
+          completedCode = completedCode.replace('____', value);
+        }
+        this.log('Completed code by fallback:', completedCode);
+
+        if (completedCode.includes('____')) {
+          this.log('Completed code still contains blanks, aborting coding question handling');
+          return false;
+        }
+      }
 
       // 5. Ace Editorにコードを入力
-      if (!this.setAceEditorContent(completedCode)) {
+      if (!(await this.setAceEditorContent(completedCode))) {
         this.log('Failed to set code in Ace Editor');
         return false;
       }
@@ -626,24 +661,64 @@ class QuestNavigator {
         return false;
       }
 
-      await this.sleep(2000); // 実行結果を待つ
+      // 実行結果を待つ（最大10回）
+      let result = null;
+      for (let i = 0; i < 10; i++) {
+        await this.sleep(1000);
+        result = this.getExecutionResult();
+        if (result) {
+          break;
+        }
+      }
 
       // 7. 実行結果を取得
-      const result = this.getExecutionResult();
       this.log('Execution result:', result);
+      if (!result) {
+        this.log('No execution result obtained, falling back to AI answer');
+
+        const choices = this.extractChoices();
+        if (choices.length === 0) {
+          this.log('No choices available for fallback answer');
+          return false;
+        }
+
+        const fallbackAnswer = await this.aiHelper.answerQuestion(questionText, choices, choices[0].type);
+        this.log('Fallback AI answer (without execution result):', fallbackAnswer);
+
+        if (choices[0].type === 'radio') {
+          await this.selectAnswer(choices, fallbackAnswer);
+        } else {
+          await this.selectMultipleAnswers(choices, fallbackAnswer);
+        }
+
+        await this.sleep(500);
+        if (await this.clickSubmitButton()) {
+          this.log('Submitted fallback answer after missing execution result');
+          await this.sleep(2000);
+          return true;
+        }
+
+        return false;
+      }
 
       // 8. 結果から答えを導く
-      const answer = await this.aiHelper.deriveAnswerFromResult(questionText, result);
+      const answer = this.extractAnswerFromResultText(result, questionText);
       this.log('Derived answer:', answer);
 
       // 9. 選択肢を選ぶ
-      const choices = this.extractChoices();
-      if (choices.length > 0) {
-        const answerIndex = this.findMatchingChoice(choices, answer);
+      const finalChoices = this.extractChoices();
+      if (finalChoices.length > 0) {
+        const answerIndex = this.findMatchingChoice(finalChoices, answer);
         if (answerIndex !== -1) {
-          await this.selectAnswer(choices, answerIndex);
+          await this.selectAnswer(finalChoices, answerIndex);
           this.log('Selected answer:', answerIndex);
-          return true;
+
+          await this.sleep(500);
+          if (await this.clickSubmitButton()) {
+            this.log('Submitted answer after execution result');
+            await this.sleep(2000);
+            return true;
+          }
         }
       }
 
@@ -652,6 +727,223 @@ class QuestNavigator {
       this.log('Error handling coding question:', error);
       return false;
     }
+  }
+
+  getCodingFillValues(code, questionText, blankCount, providedDescriptionText = null) {
+    const blankContexts = this.extractBlanksFromCode(code);
+    const descriptionText = providedDescriptionText ?? this.extractCodingDescriptionText();
+    const methodCandidates = this.extractMethodMappingFromDescription(descriptionText);
+
+    this.log('Method candidates:', methodCandidates);
+
+    const fillValues = [];
+
+    for (const blank of blankContexts) {
+      let selected = null;
+
+      if (blank.comment) {
+        const match = methodCandidates.find(item => !item.used && item.keyword && blank.comment.includes(item.keyword));
+        if (match) {
+          selected = match.method;
+          match.used = true;
+        }
+      }
+
+      if (!selected && questionText) {
+        const match = methodCandidates.find(item => !item.used && item.keyword && questionText.includes(item.keyword));
+        if (match) {
+          selected = match.method;
+          match.used = true;
+        }
+      }
+
+      if (!selected) {
+        const unused = methodCandidates.find(item => !item.used);
+        if (unused) {
+          selected = unused.method;
+          unused.used = true;
+        }
+      }
+
+      if (!selected) {
+        selected = this.guessMethodFromText(blank.comment || questionText || '');
+      }
+
+      fillValues.push(selected);
+    }
+
+    // 候補が不足している場合は残りを推測
+    while (fillValues.length < blankCount) {
+      fillValues.push(this.guessMethodFromText(questionText || ''));
+    }
+
+    return fillValues;
+  }
+
+  extractCodingDescriptionText() {
+    const selectors = [
+      '#description-area',
+      '.p-tab-content-description',
+      '.p-block-description-inner',
+      '.qfc-m-operation-description-area',
+      '.markdown-body'
+    ];
+
+    const texts = [];
+    for (const selector of selectors) {
+      const nodes = document.querySelectorAll(selector);
+      if (nodes.length > 0) {
+        nodes.forEach(node => {
+          const text = node.textContent;
+          if (text) {
+            texts.push(text.trim());
+          }
+        });
+      }
+    }
+
+    return texts.join('\n');
+  }
+
+  extractMethodMappingFromDescription(descriptionText) {
+    if (!descriptionText) {
+      return [];
+    }
+
+    const lines = descriptionText
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line.length > 0);
+
+    const mapping = [];
+    for (const line of lines) {
+      const bulletMatch = line.match(/^・\s*([^：:]+)[：:](.*)$/);
+      if (bulletMatch) {
+        const keyword = bulletMatch[1].trim();
+        const methodMatch = bulletMatch[2].match(/\.\s*([a-zA-Z_][\w]*)\s*\(\)/);
+        if (methodMatch) {
+          const methodName = methodMatch[1].trim();
+          mapping.push({
+            keyword,
+            method: `${methodName}()`,
+            used: false
+          });
+          continue;
+        }
+      }
+
+      const methodOnly = line.match(/([a-zA-Z_][\w]*)\s*\(\)/);
+      if (methodOnly) {
+        const methodName = methodOnly[1].trim();
+        mapping.push({
+          keyword: '',
+          method: `${methodName}()`,
+          used: false
+        });
+      }
+    }
+
+    return mapping;
+  }
+
+  extractBlanksFromCode(code) {
+    const lines = code.split('\n');
+    const blanks = [];
+    let lastComment = '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('#')) {
+        lastComment = trimmed.replace(/^#\s*/, '');
+      }
+
+      if (line.includes('____')) {
+        blanks.push({
+          line,
+          comment: lastComment
+        });
+      }
+    }
+
+    return blanks;
+  }
+
+  guessMethodFromText(text) {
+    if (!text) {
+      return null;
+    }
+
+    if (/(ユニーク数|unique count|件数|種類)/i.test(text)) {
+      return 'nunique()';
+    }
+
+    if (/(ユニークな要素|unique|一覧)/i.test(text)) {
+      return 'unique()';
+    }
+
+    if (/(合計|sum)/i.test(text)) {
+      return 'sum()';
+    }
+
+    if (/(平均|mean)/i.test(text)) {
+      return 'mean()';
+    }
+
+    if (/(中央値|median)/i.test(text)) {
+      return 'median()';
+    }
+
+    if (/(最小|min)/i.test(text)) {
+      return 'min()';
+    }
+
+    if (/(最大|max)/i.test(text)) {
+      return 'max()';
+    }
+
+    if (/(標準偏差|std)/i.test(text)) {
+      return 'std()';
+    }
+
+    return null;
+  }
+
+  extractAnswerFromResultText(resultText, questionText) {
+    if (!resultText) {
+      return null;
+    }
+
+    const lines = resultText
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line.length > 0);
+
+    for (const line of lines) {
+      if (/(数|count|合計|total|件数)/i.test(line)) {
+        const numberMatch = line.match(/-?\d+(\.\d+)?/);
+        if (numberMatch) {
+          return numberMatch[0];
+        }
+      }
+    }
+
+    if (questionText) {
+      for (const line of lines) {
+        if (line.includes(questionText)) {
+          const numberMatch = line.match(/-?\d+(\.\d+)?/);
+          if (numberMatch) {
+            return numberMatch[0];
+          }
+        }
+      }
+    }
+
+    const defaultMatch = resultText.match(/-?\d+(\.\d+)?/);
+    if (defaultMatch) {
+      return defaultMatch[0];
+    }
+
+    return lines.length > 0 ? lines[0] : null;
   }
 
   getAceEditorContent() {
@@ -723,27 +1015,7 @@ class QuestNavigator {
 
     this.log('Attempting to cache editor instance...');
 
-    // 方法1: ページコンテキストから直接取得（最も確実）
-    try {
-      const result = this.executeInPageContext(() => {
-        const elem = document.querySelector('#operation-editor');
-        return elem && elem.env && elem.env.editor ? true : false;
-      });
-
-      if (result) {
-        // DOM要素から取得
-        const operationEditor = document.querySelector('#operation-editor');
-        if (operationEditor && operationEditor.env && operationEditor.env.editor) {
-          this.editorInstance = operationEditor.env.editor;
-          this.log('✓ Cached editor instance via #operation-editor.env.editor (page context)');
-          return;
-        }
-      }
-    } catch (e) {
-      this.log('Page context check failed:', e.message);
-    }
-
-    // 方法2: ace.edit() で取得
+    // 方法1: ace.edit() で取得
     if (typeof ace !== 'undefined' && ace.edit) {
       try {
         const editor = ace.edit('operation-editor');
@@ -757,7 +1029,7 @@ class QuestNavigator {
       }
     }
 
-    // 方法3: DOM要素から取得
+    // 方法2: DOM要素から取得
     const operationEditor = document.querySelector('#operation-editor');
     if (operationEditor && operationEditor.env && operationEditor.env.editor) {
       this.editorInstance = operationEditor.env.editor;
@@ -765,7 +1037,7 @@ class QuestNavigator {
       return;
     }
 
-    // 方法4: .ace_editor クラスから取得
+    // 方法3: .ace_editor クラスから取得
     const aceElements = document.querySelectorAll('.ace_editor');
     for (const elem of aceElements) {
       if (elem.env && elem.env.editor) {
@@ -778,41 +1050,20 @@ class QuestNavigator {
     this.log('✗ Could not cache editor instance');
   }
 
-  executeInPageContext(func) {
-    // ページのコンテキストで関数を実行
-    const script = document.createElement('script');
-    script.textContent = `
-      (function() {
-        try {
-          const result = (${func.toString()})();
-          document.body.setAttribute('data-page-context-result', JSON.stringify(result));
-        } catch (e) {
-          document.body.setAttribute('data-page-context-result', JSON.stringify({error: e.message}));
-        }
-      })();
-    `;
-    document.documentElement.appendChild(script);
-    script.remove();
-
-    const resultStr = document.body.getAttribute('data-page-context-result');
-    document.body.removeAttribute('data-page-context-result');
-
-    return resultStr ? JSON.parse(resultStr) : null;
-  }
-
-  setAceEditorContent(code) {
+  async setAceEditorContent(code) {
     this.log('Attempting to set Ace Editor content...');
 
-    // 方法0: ページコンテキストでスクリプトを直接実行（最も確実）
+    // 方法0: chrome.scripting 経由でページコンテキストを操作
     try {
-      this.log('Trying page context injection...');
-      const success = this.setEditorContentViaPageContext(code);
+      this.log('Trying scripting API injection...');
+      const success = await this.setEditorContentViaScripting(code);
       if (success) {
-        this.log('✓ Set content via page context injection');
+        this.log('✓ Set content via scripting API');
         return true;
       }
+      this.log('Scripting API injection did not succeed, falling back');
     } catch (e) {
-      this.log('✗ Page context injection failed:', e.message);
+      this.log('✗ Scripting API injection failed:', e.message);
     }
 
     // まず、キャッシュを試みる（まだキャッシュされていない場合）
@@ -876,32 +1127,28 @@ class QuestNavigator {
     return false;
   }
 
-  setEditorContentViaPageContext(code) {
-    // ページのコンテキストで直接エディターを操作
-    const script = document.createElement('script');
-    const escapedCode = code.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
-    script.textContent = `
-      (function() {
-        try {
-          const elem = document.querySelector('#operation-editor');
-          if (elem && elem.env && elem.env.editor) {
-            elem.env.editor.setValue(\`${escapedCode}\`, -1);
-            document.body.setAttribute('data-editor-set-result', 'success');
-          } else {
-            document.body.setAttribute('data-editor-set-result', 'no-editor');
-          }
-        } catch (e) {
-          document.body.setAttribute('data-editor-set-result', 'error:' + e.message);
+  setEditorContentViaScripting(code) {
+    return new Promise((resolve, reject) => {
+      if (!chrome?.runtime?.sendMessage) {
+        resolve(false);
+        return;
+      }
+
+      chrome.runtime.sendMessage({ action: 'setAceEditorContent', code }, response => {
+        const lastError = chrome.runtime.lastError;
+        if (lastError) {
+          reject(new Error(lastError.message));
+          return;
         }
-      })();
-    `;
-    document.documentElement.appendChild(script);
-    script.remove();
 
-    const result = document.body.getAttribute('data-editor-set-result');
-    document.body.removeAttribute('data-editor-set-result');
+        if (!response) {
+          resolve(false);
+          return;
+        }
 
-    return result === 'success';
+        resolve(!!response.success);
+      });
+    });
   }
 
   async clickExecuteButton() {
@@ -935,6 +1182,24 @@ class QuestNavigator {
       const elem = document.querySelector(selector);
       if (elem && this.isVisible(elem)) {
         return elem.textContent.trim();
+      }
+    }
+
+    const consoleZone = document.querySelector('#code-console-zone');
+    if (consoleZone) {
+      const zoneText = consoleZone.innerText.trim();
+      if (zoneText) {
+        this.log('Console zone text preview:', zoneText.slice(0, 120));
+        return zoneText;
+      }
+    }
+
+    const preElements = document.querySelectorAll('#code-area pre, #code-console-zone pre, pre');
+    for (const pre of preElements) {
+      const text = pre.textContent.trim();
+      if (text) {
+        this.log('Found text in <pre> element:', text.slice(0, 120));
+        return text;
       }
     }
 

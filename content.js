@@ -96,6 +96,19 @@ class QuestNavigator {
       return;
     }
 
+    // Step 1.5: コーディング問題かチェック（一旦無効化）
+    // TODO: エディターへの書き込み方法を修正後に有効化
+    /*
+    if (this.isCodingQuestion()) {
+      this.log('Coding question detected');
+      if (await this.handleCodingQuestion()) {
+        this.log('Handled coding question');
+        await this.sleep(1000);
+        return;
+      }
+    }
+    */
+
     // Step 2: 問題文があるかチェック
     const questionHandled = await this.handleQuestion();
     if (questionHandled) {
@@ -123,7 +136,7 @@ class QuestNavigator {
       await this.sleep(1500); // 採点結果を待つ
 
       // 不正解かチェック
-      if (await this.checkIfIncorrect()) {
+      if (this.checkIfIncorrect()) {
         this.log('Answer was incorrect, trying with hint');
         if (await this.handleIncorrectAnswer()) {
           return;
@@ -524,6 +537,433 @@ class QuestNavigator {
 
   sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  // ========== コーディング問題の処理 ==========
+
+  isCodingQuestion() {
+    this.log('Checking if this is a coding question...');
+
+    // 1. 最も確実な方法: .ace_editor クラスの存在をチェック
+    const aceEditor = document.querySelector('.ace_editor');
+    if (aceEditor) {
+      this.log(`✓ Ace Editor detected (.ace_editor found):`, {
+        id: aceEditor.id,
+        className: aceEditor.className
+      });
+      return true;
+    }
+
+    // 2. 特定のエディターIDをチェック
+    const operationEditor = document.querySelector('#operation-editor');
+    if (operationEditor) {
+      this.log('✓ Operation Editor detected (#operation-editor found)');
+      return true;
+    }
+
+    // 3. p-editor-operation クラスをチェック
+    const pEditorOperation = document.querySelector('.p-editor-operation');
+    if (pEditorOperation) {
+      this.log('✓ Editor detected (.p-editor-operation found)');
+      return true;
+    }
+
+    // 4. その他のセレクタ
+    const aceSelectors = [
+      '.ace_content',
+      '#editor.ace_editor',
+      'pre#editor',
+      '[id*="editor"]'
+    ];
+
+    for (const selector of aceSelectors) {
+      const elem = document.querySelector(selector);
+      if (elem && elem.classList && (elem.classList.contains('ace_editor') || elem.classList.contains('p-editor-operation'))) {
+        this.log(`✓ Editor detected with selector: ${selector}`);
+        return true;
+      }
+    }
+
+    this.log('✗ No coding question detected');
+    return false;
+  }
+
+  async handleCodingQuestion() {
+    try {
+      // 1. 問題文を取得
+      const questionText = this.extractQuestionText();
+      this.log('Question text:', questionText);
+
+      // 2. Ace Editorからコードを取得
+      const code = this.getAceEditorContent();
+      if (!code) {
+        this.log('Could not get code from Ace Editor');
+        return false;
+      }
+      this.log('Original code:', code);
+
+      // 3. 穴埋め箇所（____）が存在するかチェック
+      if (!code.includes('____')) {
+        this.log('No blanks found in code, skipping');
+        return false;
+      }
+
+      // 4. Geminiに問い合わせて穴埋め部分のコードを取得
+      const completedCode = await this.aiHelper.completeCodingQuestion(questionText, code);
+      this.log('Completed code:', completedCode);
+
+      // 5. Ace Editorにコードを入力
+      if (!this.setAceEditorContent(completedCode)) {
+        this.log('Failed to set code in Ace Editor');
+        return false;
+      }
+
+      await this.sleep(500);
+
+      // 6. 実行ボタンを押す
+      if (!await this.clickExecuteButton()) {
+        this.log('Failed to click execute button');
+        return false;
+      }
+
+      await this.sleep(2000); // 実行結果を待つ
+
+      // 7. 実行結果を取得
+      const result = this.getExecutionResult();
+      this.log('Execution result:', result);
+
+      // 8. 結果から答えを導く
+      const answer = await this.aiHelper.deriveAnswerFromResult(questionText, result);
+      this.log('Derived answer:', answer);
+
+      // 9. 選択肢を選ぶ
+      const choices = this.extractChoices();
+      if (choices.length > 0) {
+        const answerIndex = this.findMatchingChoice(choices, answer);
+        if (answerIndex !== -1) {
+          await this.selectAnswer(choices, answerIndex);
+          this.log('Selected answer:', answerIndex);
+          return true;
+        }
+      }
+
+      return false;
+    } catch (error) {
+      this.log('Error handling coding question:', error);
+      return false;
+    }
+  }
+
+  getAceEditorContent() {
+    this.log('Attempting to get Ace Editor content...');
+
+    // まず、エディターインスタンスの取得を試みる（最優先）
+    this.cacheEditorInstance();
+
+    // 方法1: グローバルaceオブジェクトから取得
+    if (typeof ace !== 'undefined' && ace.edit) {
+      this.log('✓ Found global ace object');
+
+      // ace.edit() で直接エディターを取得
+      try {
+        const editor = ace.edit('operation-editor');
+        if (editor) {
+          const content = editor.getValue();
+          this.log('✓ Got content from ace.edit("operation-editor"):', content.substring(0, 50) + '...');
+          // エディターインスタンスを保存（後で使う）
+          this.editorInstance = editor;
+          return content;
+        }
+      } catch (e) {
+        this.log('Could not get editor via ace.edit("operation-editor"):', e.message);
+      }
+    }
+
+    // 方法2: テキストレイヤーから直接取得（読み取り専用）
+    const textLayer = document.querySelector('.ace_text-layer');
+    if (textLayer) {
+      const content = textLayer.textContent;
+      this.log('✓ Got content from .ace_text-layer:', content.substring(0, 50) + '...');
+      return content;
+    }
+
+    // 方法3: #operation-editor から取得
+    const operationEditor = document.querySelector('#operation-editor');
+    if (operationEditor) {
+      this.log('Found #operation-editor');
+      if (operationEditor.env && operationEditor.env.editor) {
+        const content = operationEditor.env.editor.getValue();
+        this.log('✓ Got content from #operation-editor.env.editor');
+        this.editorInstance = operationEditor.env.editor;
+        return content;
+      }
+    }
+
+    // 方法4: DOM要素から取得 (.ace_editor クラス)
+    const aceElements = document.querySelectorAll('.ace_editor');
+    this.log(`Found ${aceElements.length} .ace_editor elements`);
+    for (const elem of aceElements) {
+      if (elem.env && elem.env.editor) {
+        const content = elem.env.editor.getValue();
+        this.log('✓ Got content from .ace_editor element');
+        this.editorInstance = elem.env.editor;
+        return content;
+      }
+    }
+
+    this.log('✗ Could not find any editor content');
+    return null;
+  }
+
+  cacheEditorInstance() {
+    // エディターインスタンスをキャッシュする専用メソッド
+    if (this.editorInstance) {
+      return; // 既にキャッシュ済み
+    }
+
+    this.log('Attempting to cache editor instance...');
+
+    // 方法1: ページコンテキストから直接取得（最も確実）
+    try {
+      const result = this.executeInPageContext(() => {
+        const elem = document.querySelector('#operation-editor');
+        return elem && elem.env && elem.env.editor ? true : false;
+      });
+
+      if (result) {
+        // DOM要素から取得
+        const operationEditor = document.querySelector('#operation-editor');
+        if (operationEditor && operationEditor.env && operationEditor.env.editor) {
+          this.editorInstance = operationEditor.env.editor;
+          this.log('✓ Cached editor instance via #operation-editor.env.editor (page context)');
+          return;
+        }
+      }
+    } catch (e) {
+      this.log('Page context check failed:', e.message);
+    }
+
+    // 方法2: ace.edit() で取得
+    if (typeof ace !== 'undefined' && ace.edit) {
+      try {
+        const editor = ace.edit('operation-editor');
+        if (editor && editor.getValue) {
+          this.editorInstance = editor;
+          this.log('✓ Cached editor instance via ace.edit("operation-editor")');
+          return;
+        }
+      } catch (e) {
+        // エラーは無視（他の方法を試す）
+      }
+    }
+
+    // 方法3: DOM要素から取得
+    const operationEditor = document.querySelector('#operation-editor');
+    if (operationEditor && operationEditor.env && operationEditor.env.editor) {
+      this.editorInstance = operationEditor.env.editor;
+      this.log('✓ Cached editor instance via #operation-editor.env.editor');
+      return;
+    }
+
+    // 方法4: .ace_editor クラスから取得
+    const aceElements = document.querySelectorAll('.ace_editor');
+    for (const elem of aceElements) {
+      if (elem.env && elem.env.editor) {
+        this.editorInstance = elem.env.editor;
+        this.log('✓ Cached editor instance via .ace_editor element');
+        return;
+      }
+    }
+
+    this.log('✗ Could not cache editor instance');
+  }
+
+  executeInPageContext(func) {
+    // ページのコンテキストで関数を実行
+    const script = document.createElement('script');
+    script.textContent = `
+      (function() {
+        try {
+          const result = (${func.toString()})();
+          document.body.setAttribute('data-page-context-result', JSON.stringify(result));
+        } catch (e) {
+          document.body.setAttribute('data-page-context-result', JSON.stringify({error: e.message}));
+        }
+      })();
+    `;
+    document.documentElement.appendChild(script);
+    script.remove();
+
+    const resultStr = document.body.getAttribute('data-page-context-result');
+    document.body.removeAttribute('data-page-context-result');
+
+    return resultStr ? JSON.parse(resultStr) : null;
+  }
+
+  setAceEditorContent(code) {
+    this.log('Attempting to set Ace Editor content...');
+
+    // 方法0: ページコンテキストでスクリプトを直接実行（最も確実）
+    try {
+      this.log('Trying page context injection...');
+      const success = this.setEditorContentViaPageContext(code);
+      if (success) {
+        this.log('✓ Set content via page context injection');
+        return true;
+      }
+    } catch (e) {
+      this.log('✗ Page context injection failed:', e.message);
+    }
+
+    // まず、キャッシュを試みる（まだキャッシュされていない場合）
+    if (!this.editorInstance) {
+      this.log('No cached instance, attempting to cache...');
+      this.cacheEditorInstance();
+    }
+
+    // 方法1: キャッシュされたエディターインスタンスを使用
+    if (this.editorInstance) {
+      this.log('Using cached editor instance');
+      try {
+        this.editorInstance.setValue(code, -1); // -1 でカーソルを先頭に
+        this.log('✓ Set content via cached editor instance');
+        return true;
+      } catch (e) {
+        this.log('✗ Failed to set via cached instance:', e.message);
+        this.editorInstance = null; // キャッシュをクリア
+      }
+    }
+
+    // 方法2: #operation-editor から設定
+    const operationEditor = document.querySelector('#operation-editor');
+    if (operationEditor) {
+      this.log('Found #operation-editor element');
+      if (operationEditor.env && operationEditor.env.editor) {
+        try {
+          operationEditor.env.editor.setValue(code, -1);
+          this.log('✓ Set content via #operation-editor.env.editor');
+          this.editorInstance = operationEditor.env.editor;
+          return true;
+        } catch (e) {
+          this.log('✗ Failed via #operation-editor.env.editor:', e.message);
+        }
+      } else {
+        this.log('✗ #operation-editor.env.editor not found');
+      }
+    } else {
+      this.log('✗ #operation-editor element not found');
+    }
+
+    // 方法3: DOM要素から設定 (.ace_editor クラス)
+    const aceElements = document.querySelectorAll('.ace_editor');
+    this.log(`Found ${aceElements.length} .ace_editor elements`);
+    for (const elem of aceElements) {
+      if (elem.env && elem.env.editor) {
+        try {
+          elem.env.editor.setValue(code, -1);
+          this.log('✓ Set content via .ace_editor element');
+          this.editorInstance = elem.env.editor;
+          return true;
+        } catch (e) {
+          this.log('✗ Failed via .ace_editor element:', e.message);
+        }
+      } else {
+        this.log('✗ .ace_editor element has no env.editor');
+      }
+    }
+
+    this.log('✗ Could not set editor content - all methods failed');
+    return false;
+  }
+
+  setEditorContentViaPageContext(code) {
+    // ページのコンテキストで直接エディターを操作
+    const script = document.createElement('script');
+    const escapedCode = code.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+    script.textContent = `
+      (function() {
+        try {
+          const elem = document.querySelector('#operation-editor');
+          if (elem && elem.env && elem.env.editor) {
+            elem.env.editor.setValue(\`${escapedCode}\`, -1);
+            document.body.setAttribute('data-editor-set-result', 'success');
+          } else {
+            document.body.setAttribute('data-editor-set-result', 'no-editor');
+          }
+        } catch (e) {
+          document.body.setAttribute('data-editor-set-result', 'error:' + e.message);
+        }
+      })();
+    `;
+    document.documentElement.appendChild(script);
+    script.remove();
+
+    const result = document.body.getAttribute('data-editor-set-result');
+    document.body.removeAttribute('data-editor-set-result');
+
+    return result === 'success';
+  }
+
+  async clickExecuteButton() {
+    // 「試す」「実行」などのボタンを探す
+    const buttonTexts = ['試す', '実行', 'Run', 'Execute'];
+
+    const buttons = document.querySelectorAll('button, a, input[type="button"]');
+    for (const button of buttons) {
+      const text = button.textContent.trim();
+      if (buttonTexts.some(btnText => text.includes(btnText)) && this.isVisible(button)) {
+        this.log('Found execute button:', text);
+        button.click();
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  getExecutionResult() {
+    // 実行結果エリアを探す
+    const selectors = [
+      '.execution-result',
+      '.output',
+      '.result',
+      '[class*="result"]',
+      '[class*="output"]'
+    ];
+
+    for (const selector of selectors) {
+      const elem = document.querySelector(selector);
+      if (elem && this.isVisible(elem)) {
+        return elem.textContent.trim();
+      }
+    }
+
+    return null;
+  }
+
+  findMatchingChoice(choices, answer) {
+    // 答えと一致する選択肢を探す
+    const answerStr = String(answer).trim();
+
+    for (let i = 0; i < choices.length; i++) {
+      const choiceText = choices[i].text.trim();
+      if (choiceText === answerStr || choiceText.includes(answerStr)) {
+        return i;
+      }
+    }
+
+    // 数値の場合は、近い値を探す
+    const answerNum = parseFloat(answerStr);
+    if (!isNaN(answerNum)) {
+      for (let i = 0; i < choices.length; i++) {
+        const choiceNum = parseFloat(choices[i].text);
+        if (!isNaN(choiceNum) && Math.abs(choiceNum - answerNum) < 0.01) {
+          return i;
+        }
+      }
+    }
+
+    return -1;
   }
 }
 

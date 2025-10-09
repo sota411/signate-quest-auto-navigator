@@ -88,7 +88,7 @@ class AIHelper {
 
     try {
       const prompt = this.buildPrompt(questionText, choices, questionType);
-      const answer = await this.queryGemini(prompt);
+      const answer = await this.queryGemini(prompt, 'gemini-2.5-flash'); // 初回は高速モデル
       return this.parseAnswer(answer, choices, questionType);
     } catch (error) {
       console.error('[AIHelper] Error querying AI:', error);
@@ -104,7 +104,7 @@ class AIHelper {
 
     try {
       const prompt = this.buildPromptWithHint(questionText, choices, questionType, hintText);
-      const answer = await this.queryGemini(prompt);
+      const answer = await this.queryGemini(prompt, 'gemini-2.5-pro'); // ヒント付きは最高精度モデル
       return this.parseAnswer(answer, choices, questionType);
     } catch (error) {
       console.error('[AIHelper] Error querying AI with hint:', error);
@@ -166,7 +166,7 @@ class AIHelper {
     return prompt;
   }
 
-  async queryGemini(prompt) {
+  async queryGemini(prompt, model = 'gemini-2.5-flash') {
     if (!this.apiKey) {
       throw new Error('API key not configured');
     }
@@ -188,6 +188,7 @@ class AIHelper {
     }
 
     const data = await response.json();
+    console.log('[AIHelper] API response:', JSON.stringify(data, null, 2));
 
     if (Array.isArray(data.candidates)) {
       for (const candidate of data.candidates) {
@@ -331,6 +332,130 @@ class AIHelper {
     } else {
       return [0]; // 複数選択の場合は配列で返す
     }
+  }
+
+  // ========== コーディング問題用のメソッド ==========
+
+  async completeCodingQuestion(questionText, code) {
+    if (!this.apiKey) {
+      console.log('[AIHelper] No API key configured for coding question');
+      return code; // そのまま返す
+    }
+
+    try {
+      const prompt = this.buildCodingPrompt(questionText, code);
+      const answer = await this.queryGemini(prompt);
+      return this.extractCompletedCode(answer, code);
+    } catch (error) {
+      console.error('[AIHelper] Error completing coding question:', error);
+      return code; // エラー時はそのまま返す
+    }
+  }
+
+  buildCodingPrompt(questionText, code) {
+    let prompt = `以下のPythonコードの穴埋め問題に回答してください。\n\n`;
+    prompt += `問題文:\n${questionText}\n\n`;
+    prompt += `コード（____の部分を埋めてください）:\n${code}\n\n`;
+    prompt += `指示:\n`;
+    prompt += `- ____の部分に入るコードのみを考えてください\n`;
+    prompt += `- 完成したコード全体を返してください\n`;
+    prompt += `- コードブロック（\`\`\`）は使わず、コードのみを返してください\n`;
+    return prompt;
+  }
+
+  extractCompletedCode(answer, originalCode) {
+    console.log('[AIHelper] Extracting completed code from AI response...');
+    console.log('[AIHelper] AI response:', answer.substring(0, 200));
+
+    // AIの回答からコードを抽出
+    let code = answer.trim();
+
+    // ```python や ``` で囲まれている場合は除去
+    code = code.replace(/```python\n?/g, '');
+    code = code.replace(/```\n?/g, '');
+    code = code.trim();
+
+    // 改行を正規化
+    code = code.replace(/\r\n/g, '\n');
+
+    // もし元のコードと同じ構造なら、そのまま返す
+    if (code.includes('import') && code.includes('print')) {
+      console.log('[AIHelper] ✓ Extracted completed code from AI response');
+      return code;
+    }
+
+    // AIが____の部分だけを返した場合（穴埋めの内容だけ）
+    // 例: "nunique, unique" や "nunique()\nunique()" など
+    if (!code.includes('import') && !code.includes('def')) {
+      console.log('[AIHelper] AI returned only fill-in content, replacing ____ in original code');
+
+      // カンマ区切りまたは改行で分割
+      let fillIns = [];
+      if (code.includes(',')) {
+        // カンマ区切りの場合
+        fillIns = code.split(',').map(s => s.trim()).filter(s => s.length > 0);
+      } else if (code.includes('\n')) {
+        // 改行区切りの場合
+        fillIns = code.split('\n').map(s => s.trim()).filter(s => s.length > 0 && !s.includes('____'));
+      } else {
+        // 単一の値の場合
+        fillIns = [code];
+      }
+
+      console.log('[AIHelper] Fill-in values:', fillIns);
+
+      let modifiedCode = originalCode;
+      for (const fillIn of fillIns) {
+        // ____を1つずつ置換
+        modifiedCode = modifiedCode.replace('____', fillIn);
+      }
+
+      return modifiedCode;
+    }
+
+    console.log('[AIHelper] ✗ Could not extract code, returning original');
+    return originalCode;
+  }
+
+  async deriveAnswerFromResult(questionText, executionResult) {
+    if (!this.apiKey) {
+      console.log('[AIHelper] No API key configured for deriving answer');
+      return null;
+    }
+
+    try {
+      const prompt = this.buildAnswerDerivationPrompt(questionText, executionResult);
+      const answer = await this.queryGemini(prompt);
+      return this.extractAnswer(answer);
+    } catch (error) {
+      console.error('[AIHelper] Error deriving answer:', error);
+      return null;
+    }
+  }
+
+  buildAnswerDerivationPrompt(questionText, executionResult) {
+    let prompt = `以下の問題の実行結果から、答えを導いてください。\n\n`;
+    prompt += `問題文:\n${questionText}\n\n`;
+    prompt += `実行結果:\n${executionResult}\n\n`;
+    prompt += `指示:\n`;
+    prompt += `- 問題で求められている値のみを返してください\n`;
+    prompt += `- 数値の場合は数値のみ、文字列の場合は文字列のみを返してください\n`;
+    prompt += `- 説明や計算過程は不要です\n`;
+    return prompt;
+  }
+
+  extractAnswer(answer) {
+    // AIの回答から答えを抽出
+    const trimmed = answer.trim();
+
+    // 数値の場合
+    const numberMatch = trimmed.match(/\d+(\.\d+)?/);
+    if (numberMatch) {
+      return numberMatch[0];
+    }
+
+    // そのまま返す
+    return trimmed;
   }
 }
 

@@ -210,13 +210,29 @@ class AIHelper {
     }
 
     const data = await response.json();
+    console.log('[AIHelper] API response:', JSON.stringify(data, null, 2));
 
     if (data.candidates && data.candidates.length > 0) {
-      const text = data.candidates[0].content.parts[0].text;
-      console.log('[AIHelper] Gemini response received, length:', text.length);
-      return text.trim();
+      const candidate = data.candidates[0];
+
+      // 安全フィルターでブロックされたかチェック
+      if (candidate.finishReason === 'SAFETY') {
+        console.error('[AIHelper] Response blocked by safety filter:', candidate.safetyRatings);
+        throw new Error('Response blocked by safety filter');
+      }
+
+      // コンテンツが存在するかチェック
+      if (candidate.content && candidate.content.parts && candidate.content.parts.length > 0) {
+        const text = candidate.content.parts[0].text;
+        console.log('[AIHelper] Gemini response received, length:', text.length);
+        return text.trim();
+      } else {
+        console.error('[AIHelper] No content in response:', candidate);
+        throw new Error('No content in API response');
+      }
     }
 
+    console.error('[AIHelper] No candidates in response:', data);
     throw new Error('No response from API');
   }
 

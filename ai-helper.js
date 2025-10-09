@@ -40,7 +40,7 @@ class AIHelper {
     }
 
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${this.apiKey}`;
 
       const response = await fetch(url, {
         method: 'POST',
@@ -96,7 +96,7 @@ class AIHelper {
 
     try {
       const prompt = this.buildPrompt(questionText, choices, questionType);
-      const answer = await this.queryGemini(prompt, 'gemini-2.0-flash'); // 初回は高速モデル
+      const answer = await this.queryGemini(prompt, 'gemini-2.5-flash'); // 初回は高速モデル
       return this.parseAnswer(answer, choices, questionType);
     } catch (error) {
       console.error('[AIHelper] Error querying AI:', error);
@@ -112,7 +112,7 @@ class AIHelper {
 
     try {
       const prompt = this.buildPromptWithHint(questionText, choices, questionType, hintText);
-      const answer = await this.queryGemini(prompt, 'gemini-2.5-flash'); // ヒント付きは高精度モデル
+      const answer = await this.queryGemini(prompt, 'gemini-2.5-pro'); // ヒント付きは最高精度モデル
       return this.parseAnswer(answer, choices, questionType);
     } catch (error) {
       console.error('[AIHelper] Error querying AI with hint:', error);
@@ -174,7 +174,7 @@ class AIHelper {
     return prompt;
   }
 
-  async queryGemini(prompt, model = 'gemini-2.0-flash') {
+  async queryGemini(prompt, model = 'gemini-2.5-flash') {
     if (!this.apiKey) {
       throw new Error('API key not configured');
     }

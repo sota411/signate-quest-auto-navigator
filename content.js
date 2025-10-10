@@ -181,11 +181,39 @@ class QuestNavigator {
   }
 
   async clickClearButton() {
+    // 既存のセレクタでの検索
     const clearButton = document.querySelector('#movie-button-clear a, .p-movie-button-clear a');
-    if (clearButton) {
+    if (clearButton && this.isVisible(clearButton)) {
+      this.log('Found clear button (by selector):', clearButton.textContent.trim());
       clearButton.click();
       return true;
     }
+
+    // SVGアイコン（fa-right-left）を含むリンクを検索
+    const svgClearLinks = document.querySelectorAll('a svg.fa-right-left');
+    for (const svg of svgClearLinks) {
+      const link = svg.closest('a');
+      if (link && this.isVisible(link)) {
+        const linkText = link.textContent.trim();
+        if (linkText.includes('クリア済み') || linkText.includes('クリア')) {
+          this.log('Found clear button (by SVG icon):', linkText);
+          link.click();
+          return true;
+        }
+      }
+    }
+
+    // テキストベースで「クリア済みにする」を検索
+    const allLinks = document.querySelectorAll('a');
+    for (const link of allLinks) {
+      const text = link.textContent.trim();
+      if ((text.includes('クリア済みにする') || text.includes('クリア済み')) && this.isVisible(link)) {
+        this.log('Found clear button (by text):', text);
+        link.click();
+        return true;
+      }
+    }
+
     return false;
   }
 
@@ -237,14 +265,40 @@ class QuestNavigator {
       }
     }
 
-    // SVGアイコン付きのリンクを検索
+    // SVGアイコン付きのリンクを検索（a タグ内の SVG）
     const svgLinks = document.querySelectorAll('a svg.fa-arrow-right');
     for (const svg of svgLinks) {
       const link = svg.closest('a');
       if (link && this.isVisible(link)) {
-        this.log('Found next button (by arrow icon):', link.textContent.trim());
+        this.log('Found next button (by arrow icon in a):', link.textContent.trim());
         link.click();
         return true;
+      }
+    }
+
+    // SVGアイコン付きの div.c-next-button を検索
+    const svgDivs = document.querySelectorAll('div.c-next-button svg.fa-arrow-right');
+    for (const svg of svgDivs) {
+      const div = svg.closest('div.c-next-button');
+      if (div && this.isVisible(div)) {
+        this.log('Found next button (by arrow icon in div.c-next-button):', div.textContent.trim());
+        div.click();
+        return true;
+      }
+    }
+
+    // テキストベースで div を検索
+    const divs = document.querySelectorAll('div');
+    for (const div of divs) {
+      const text = div.textContent.trim();
+      if ((text.includes('次へ進む') || text.includes('次へ') || text === '進む') && this.isVisible(div)) {
+        // クリック可能な div かチェック（cursor: pointer など）
+        const style = window.getComputedStyle(div);
+        if (style.cursor === 'pointer' || div.onclick || div.classList.contains('c-next-button')) {
+          this.log('Found next button (by text in clickable div):', text);
+          div.click();
+          return true;
+        }
       }
     }
 

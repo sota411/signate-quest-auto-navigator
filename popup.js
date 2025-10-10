@@ -5,6 +5,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const stopBtn = document.getElementById('stopBtn');
   const statusElement = document.getElementById('status');
   const aiStatusElement = document.getElementById('aiStatus');
+  const activityStatusElement = document.getElementById('activityStatus');
   const delayInput = document.getElementById('delayInput');
   const apiKeyInput = document.getElementById('apiKeyInput');
   const saveApiKeyBtn = document.getElementById('saveApiKeyBtn');
@@ -73,6 +74,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!tab.url.includes('signate.jp')) {
       statusElement.textContent = '対象外のページ';
       statusElement.className = 'status-value';
+      activityStatusElement.textContent = '-';
+      activityStatusElement.className = 'status-value';
       startBtn.disabled = true;
       stopBtn.disabled = true;
       return;
@@ -82,6 +85,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (chrome.runtime.lastError) {
         statusElement.textContent = '未接続';
         statusElement.className = 'status-value';
+        activityStatusElement.textContent = '-';
+        activityStatusElement.className = 'status-value';
         startBtn.disabled = false;
         stopBtn.disabled = true;
         return;
@@ -92,11 +97,26 @@ document.addEventListener('DOMContentLoaded', () => {
         statusElement.className = 'status-value running';
         startBtn.disabled = true;
         stopBtn.disabled = false;
+
+        // 現在の動作状態を更新
+        if (response.activity) {
+          activityStatusElement.textContent = response.activity;
+          // AI関連の動作の場合は色を変える
+          if (response.activity.includes('AI') || response.activity.includes('Gemini')) {
+            activityStatusElement.style.color = '#fbbf24'; // 黄色
+          } else if (response.activity.includes('実行中') || response.activity.includes('待機中')) {
+            activityStatusElement.style.color = '#60a5fa'; // 青
+          } else {
+            activityStatusElement.style.color = '#4ade80'; // 緑
+          }
+        }
       } else {
         statusElement.textContent = '停止中';
         statusElement.className = 'status-value stopped';
         startBtn.disabled = false;
         stopBtn.disabled = true;
+        activityStatusElement.textContent = '停止中';
+        activityStatusElement.style.color = '#fb923c';
       }
     });
   }

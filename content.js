@@ -5,6 +5,7 @@ class QuestNavigator {
     this.isRunning = false;
     this.delay = 300; // デフォルト遅延時間（ミリ秒）
     this.aiHelper = new AIHelper();
+    this.currentActivity = '待機中'; // 現在の動作状態
     this.setupMessageListener();
     this.log('QuestNavigator initialized');
     this.restoreState();
@@ -30,6 +31,11 @@ class QuestNavigator {
     console.log(`[QuestNavigator] ${message}`, data || '');
   }
 
+  updateActivity(activity) {
+    this.currentActivity = activity;
+    console.log(`[Activity] ${activity}`);
+  }
+
   setupMessageListener() {
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       if (request.action === 'start') {
@@ -39,7 +45,7 @@ class QuestNavigator {
         this.stop();
         sendResponse({ status: 'stopped' });
       } else if (request.action === 'getStatus') {
-        sendResponse({ isRunning: this.isRunning });
+        sendResponse({ isRunning: this.isRunning, activity: this.currentActivity });
       } else if (request.action === 'getAiStatus') {
         sendResponse(this.aiHelper.getStatus());
       } else if (request.action === 'checkAiStatus') {
@@ -88,10 +94,12 @@ class QuestNavigator {
 
   async processPage() {
     this.log('Processing page...');
+    this.updateActivity('ページを処理中...');
 
     // Step 1: 「クリア済みにする」ボタンをチェック
     if (await this.clickClearButton()) {
       this.log('Clicked clear button');
+      this.updateActivity('「クリア済み」ボタンを押下');
       await this.sleep(1000);
       return;
     }
@@ -99,6 +107,7 @@ class QuestNavigator {
     // Step 1.5: コーディング問題かチェック
     if (this.isCodingQuestion()) {
       this.log('Coding question detected');
+      this.updateActivity('コーディング問題を検出');
       if (await this.handleCodingQuestion()) {
         this.log('Handled coding question');
         await this.sleep(1000);
@@ -110,12 +119,14 @@ class QuestNavigator {
     const questionHandled = await this.handleQuestion();
     if (questionHandled) {
       this.log('Handled question');
+      this.updateActivity('問題に回答済み');
 
       // 採点ボタンが有効になるまで待つ（最大3回リトライ）
       for (let i = 0; i < 3; i++) {
         await this.sleep(500);
         if (await this.clickSubmitButton()) {
           this.log('Clicked submit button after answering');
+          this.updateActivity('採点ボタンを押下');
           await this.sleep(2000);
           return;
         }
@@ -130,11 +141,13 @@ class QuestNavigator {
     const submitClicked = await this.clickSubmitButton();
     if (submitClicked) {
       this.log('Clicked submit button');
+      this.updateActivity('採点ボタンを押下');
       await this.sleep(1500); // 採点結果を待つ
 
       // 不正解かチェック
       if (this.checkIfIncorrect()) {
         this.log('Answer was incorrect, trying with hint');
+        this.updateActivity('不正解 - ヒントを確認中');
         if (await this.handleIncorrectAnswer()) {
           return;
         }
@@ -158,11 +171,13 @@ class QuestNavigator {
     // Step 4: 「次へ進む」ボタンをチェック
     if (await this.clickNextButton()) {
       this.log('Clicked next button');
+      this.updateActivity('「次へ進む」ボタンを押下');
       await this.sleep(2000);
       return;
     }
 
     this.log('No action taken on this page');
+    this.updateActivity('待機中');
   }
 
   async clickClearButton() {
@@ -272,8 +287,10 @@ class QuestNavigator {
     this.log(`Question type: ${questionType}`);
 
     // AIに問題を送って回答を取得
+    this.updateActivity('AI (Gemini) に問い合わせ中...');
     const answerResult = await this.aiHelper.answerQuestion(questionText, choices, questionType);
     this.log(`AI selected answer:`, answerResult);
+    this.updateActivity('AIから回答を取得');
 
     // 回答タイプに応じて処理
     if (questionType === 'radio') {
@@ -612,6 +629,7 @@ class QuestNavigator {
 
       let usedGemini = false;
       try {
+        this.updateActivity('AI (Gemini Pro) でコード補完中...');
         const aiCompleted = await this.aiHelper.completeCodingQuestion(questionText, code, descriptionText);
         this.log('Gemini completion result:', aiCompleted);
         if (typeof aiCompleted === 'string') {
@@ -648,6 +666,7 @@ class QuestNavigator {
       }
 
       // 5. Ace Editorにコードを入力
+      this.updateActivity('エディタにコードを入力中...');
       if (!(await this.setAceEditorContent(completedCode))) {
         this.log('Failed to set code in Ace Editor');
         return false;
@@ -656,12 +675,14 @@ class QuestNavigator {
       await this.sleep(500);
 
       // 6. 実行ボタンを押す
+      this.updateActivity('コードを実行中...');
       if (!await this.clickExecuteButton()) {
         this.log('Failed to click execute button');
         return false;
       }
 
       // 実行結果を待つ（最大10回）
+      this.updateActivity('実行結果を待機中...');
       let result = null;
       for (let i = 0; i < 10; i++) {
         await this.sleep(1000);
@@ -673,6 +694,7 @@ class QuestNavigator {
 
       // 7. 実行結果を取得
       this.log('Execution result:', result);
+      this.updateActivity('実行結果を解析中');
       if (!result) {
         this.log('No execution result obtained, falling back to AI answer');
 

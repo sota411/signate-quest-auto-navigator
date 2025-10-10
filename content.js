@@ -417,12 +417,43 @@ class QuestNavigator {
   }
 
   checkIfIncorrect() {
+    // まず「次へ進む」ボタンが表示されているかチェック
+    // 正解の場合は「次へ進む」ボタンが表示されるので、それがあれば正解と判断
+    const nextButtonSelectors = [
+      'a.for-next',
+      'a.tips-modal-btn-next',
+      'a.tips-modal-btn',
+      '.tips-modal-btn-next'
+    ];
+
+    for (const selector of nextButtonSelectors) {
+      try {
+        const elements = document.querySelectorAll(selector);
+        for (const element of elements) {
+          if (this.isVisible(element)) {
+            this.log('Next button is visible - answer is correct');
+            return false; // 次へ進むボタンがあるので正解
+          }
+        }
+      } catch (e) {
+        // セレクタエラーは無視
+      }
+    }
+
+    // テキストベースで「次へ進む」を検索
+    const links = document.querySelectorAll('a');
+    for (const link of links) {
+      const text = link.textContent.trim();
+      if ((text.includes('次へ進む') || text.includes('次へ')) && this.isVisible(link)) {
+        this.log('Next button with text is visible - answer is correct');
+        return false; // 次へ進むボタンがあるので正解
+      }
+    }
+
     // 不正解を示すメッセージを探す
     const incorrectMessages = [
       '不正解',
-      '選択されていません',
-      '思い出せない場合',
-      'ヒントを見てみましょう'
+      '選択されていません'
     ];
 
     const pageText = document.body.textContent;

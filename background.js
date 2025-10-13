@@ -13,6 +13,36 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  if (request.action === 'fetchImage') {
+    // 画像をfetchしてbase64に変換
+    fetch(request.url)
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        return response.blob();
+      })
+      .then(blob => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64 = reader.result.split(',')[1];
+          sendResponse({
+            success: true,
+            data: base64,
+            mimeType: blob.type || 'image/png'
+          });
+        };
+        reader.onerror = () => {
+          sendResponse({ success: false, error: 'Failed to read blob' });
+        };
+        reader.readAsDataURL(blob);
+      })
+      .catch(error => {
+        sendResponse({ success: false, error: error.message });
+      });
+    return true; // 非同期レスポンスを許可
+  }
+
   if (request.action === 'setAceEditorContent' && sender.tab && sender.tab.id) {
     chrome.scripting.executeScript({
       target: { tabId: sender.tab.id },

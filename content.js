@@ -310,6 +310,63 @@ class QuestNavigator {
     return false;
   }
 
+  async extractImagesFromQuestion() {
+    this.log('Extracting images from question...');
+    const images = [];
+
+    // 問題文エリア内の画像を検索
+    const questionAreas = document.querySelectorAll('.p-block-instructions-inner, .instruction-sentence-list, .markdown-body');
+
+    for (const area of questionAreas) {
+      const imgElements = area.querySelectorAll('img');
+
+      for (const img of imgElements) {
+        const src = img.src;
+        if (src && src.startsWith('http')) {
+          this.log('Found image:', src);
+
+          try {
+            const imageData = await this.fetchImageAsBase64(img);
+            if (imageData) {
+              images.push(imageData);
+              this.log('✓ Successfully converted image to base64');
+            }
+          } catch (error) {
+            this.log('✗ Failed to convert image:', error.message);
+          }
+        }
+      }
+    }
+
+    this.log(`Extracted ${images.length} images`);
+    return images;
+  }
+
+  async fetchImageAsBase64(imgElement) {
+    try {
+      this.log('Fetching image via background script:', imgElement.src);
+
+      // background scriptを使って画像を取得
+      const response = await chrome.runtime.sendMessage({
+        action: 'fetchImage',
+        url: imgElement.src
+      });
+
+      if (response && response.success) {
+        this.log('✓ Successfully fetched image from background script');
+        return {
+          data: response.data,
+          mimeType: response.mimeType
+        };
+      } else {
+        throw new Error(response?.error || 'Unknown error');
+      }
+    } catch (error) {
+      this.log('Error fetching image:', error);
+      return null;
+    }
+  }
+
   async handleQuestion() {
     // 問題文エリアを検出
     const questionArea = document.querySelector('.p-block-instructions-inner, .instruction-sentence-list');
@@ -340,9 +397,12 @@ class QuestNavigator {
     const questionType = choices[0].type;
     this.log(`Question type: ${questionType}`);
 
+    // 画像を抽出
+    const images = await this.extractImagesFromQuestion();
+
     // AIに問題を送って回答を取得
     this.updateActivity('AI (Gemini) に問い合わせ中...');
-    const answerResult = await this.aiHelper.answerQuestion(questionText, choices, questionType);
+    const answerResult = await this.aiHelper.answerQuestion(questionText, choices, questionType, images);
     this.log(`AI selected answer:`, answerResult);
     this.updateActivity('AIから回答を取得');
 
@@ -471,8 +531,38 @@ class QuestNavigator {
   }
 
   checkIfIncorrect() {
-    // まず「次へ進む」ボタンが表示されているかチェック
-    // 正解の場合は「次へ進む」ボタンが表示されるので、それがあれば正解と判断
+    this.log('Checking if answer is incorrect...');
+
+    // まず不正解メッセージを明示的に探す（最優先）
+    const incorrectMessages = [
+      '不正解',
+      '選択されていません',
+      '不正解です'
+    ];
+
+    const pageText = document.body.textContent;
+    const hasIncorrectMessage = incorrectMessages.some(msg => pageText.includes(msg));
+
+    if (hasIncorrectMessage) {
+      this.log('✗ Found incorrect message - answer is incorrect');
+      return true; // 不正解メッセージがあるので不正解
+    }
+
+    // 次に「正解」メッセージを探す
+    const correctMessages = [
+      '正解',
+      '正解です',
+      '正解！'
+    ];
+
+    const hasCorrectMessage = correctMessages.some(msg => pageText.includes(msg));
+
+    if (hasCorrectMessage) {
+      this.log('✓ Found correct message - answer is correct');
+      return false; // 正解メッセージがあるので正解
+    }
+
+    // 「次へ進む」ボタンが表示されているかチェック
     const nextButtonSelectors = [
       'a.for-next',
       'a.tips-modal-btn-next',
@@ -485,8 +575,8 @@ class QuestNavigator {
         const elements = document.querySelectorAll(selector);
         for (const element of elements) {
           if (this.isVisible(element)) {
-            this.log('Next button is visible - answer is correct');
-            return false; // 次へ進むボタンがあるので正解
+            this.log('✓ Next button is visible - answer is likely correct');
+            return false; // 次へ進むボタンがあるので正解の可能性が高い
           }
         }
       } catch (e) {
@@ -499,19 +589,15 @@ class QuestNavigator {
     for (const link of links) {
       const text = link.textContent.trim();
       if ((text.includes('次へ進む') || text.includes('次へ')) && this.isVisible(link)) {
-        this.log('Next button with text is visible - answer is correct');
-        return false; // 次へ進むボタンがあるので正解
+        this.log('✓ Next button with text is visible - answer is likely correct');
+        return false; // 次へ進むボタンがあるので正解の可能性が高い
       }
     }
 
-    // 不正解を示すメッセージを探す
-    const incorrectMessages = [
-      '不正解',
-      '選択されていません'
-    ];
-
-    const pageText = document.body.textContent;
-    return incorrectMessages.some(msg => pageText.includes(msg));
+    // どちらのメッセージも見つからない場合は、採点結果待ちの可能性があるため
+    // 保守的に「不正解ではない」と判断
+    this.log('⚠ No clear correct/incorrect indication found - assuming not incorrect');
+    return false;
   }
 
   async handleIncorrectAnswer() {
@@ -780,53 +866,66 @@ class QuestNavigator {
       // 7. 実行結果を取得
       this.log('Execution result:', result);
       this.updateActivity('実行結果を解析中');
-      if (!result) {
-        this.log('No execution result obtained, falling back to AI answer');
 
-        const choices = this.extractChoices();
-        if (choices.length === 0) {
-          this.log('No choices available for fallback answer');
-          return false;
-        }
-
-        const fallbackAnswer = await this.aiHelper.answerQuestion(questionText, choices, choices[0].type);
-        this.log('Fallback AI answer (without execution result):', fallbackAnswer);
-
-        if (choices[0].type === 'radio') {
-          await this.selectAnswer(choices, fallbackAnswer);
-        } else {
-          await this.selectMultipleAnswers(choices, fallbackAnswer);
-        }
-
-        await this.sleep(500);
-        if (await this.clickSubmitButton()) {
-          this.log('Submitted fallback answer after missing execution result');
-          await this.sleep(2000);
-          return true;
-        }
-
+      // 8. 選択肢を取得
+      const finalChoices = this.extractChoices();
+      if (finalChoices.length === 0) {
+        this.log('No choices available');
         return false;
       }
 
-      // 8. 結果から答えを導く
-      const answer = this.extractAnswerFromResultText(result, questionText);
-      this.log('Derived answer:', answer);
+      const questionType = finalChoices[0].type;
 
-      // 9. 選択肢を選ぶ
-      const finalChoices = this.extractChoices();
-      if (finalChoices.length > 0) {
-        const answerIndex = this.findMatchingChoice(finalChoices, answer);
-        if (answerIndex !== -1) {
-          await this.selectAnswer(finalChoices, answerIndex);
-          this.log('Selected answer:', answerIndex);
+      // 画像を抽出（コーディング問題でも画像がある場合に対応）
+      const images = await this.extractImagesFromQuestion();
 
-          await this.sleep(500);
-          if (await this.clickSubmitButton()) {
-            this.log('Submitted answer after execution result');
-            await this.sleep(2000);
-            return true;
-          }
+      // 9. AIに実行結果と選択肢を送って答えを選ばせる
+      if (!result) {
+        this.log('No execution result obtained, asking AI without result');
+        this.updateActivity('AI (Gemini) に問い合わせ中...');
+
+        const fallbackAnswer = await this.aiHelper.answerQuestion(questionText, finalChoices, questionType, images);
+        this.log('AI answer (without execution result):', fallbackAnswer);
+
+        if (questionType === 'radio') {
+          await this.selectAnswer(finalChoices, fallbackAnswer);
+        } else {
+          await this.selectMultipleAnswers(finalChoices, fallbackAnswer);
         }
+      } else {
+        // 実行結果がある場合はAIに実行結果も含めて送信
+        this.log('Asking AI to select answer based on execution result');
+        this.updateActivity('AI (Gemini) に実行結果を送信中...');
+
+        // 問題文 + 実行結果を組み合わせて新しい問題文として送る
+        const enrichedQuestion = `${questionText}\n\n【実行結果】\n${result}`;
+
+        const aiAnswer = await this.aiHelper.answerQuestion(enrichedQuestion, finalChoices, questionType, images);
+        this.log('AI answer (with execution result):', aiAnswer);
+
+        if (questionType === 'radio') {
+          await this.selectAnswer(finalChoices, aiAnswer);
+        } else {
+          await this.selectMultipleAnswers(finalChoices, aiAnswer);
+        }
+      }
+
+      await this.sleep(500);
+      if (await this.clickSubmitButton()) {
+        this.log('Submitted answer after AI selection');
+        this.updateActivity('採点ボタンを押下');
+        await this.sleep(2000);
+
+        // 不正解かチェック
+        if (this.checkIfIncorrect()) {
+          this.log('Coding answer was incorrect, stopping');
+          this.updateActivity('不正解 - 停止中');
+          return false; // 不正解の場合は処理を停止
+        }
+
+        // 正解の場合のみページ遷移を続行
+        this.log('Coding answer was correct');
+        return true;
       }
 
       return false;
@@ -1259,23 +1358,60 @@ class QuestNavigator {
   }
 
   async clickExecuteButton() {
-    // 「試す」「実行」などのボタンを探す
-    const buttonTexts = ['試す', '実行', 'Run', 'Execute'];
+    this.log('Looking for execute button...');
 
-    const buttons = document.querySelectorAll('button, a, input[type="button"]');
-    for (const button of buttons) {
-      const text = button.textContent.trim();
-      if (buttonTexts.some(btnText => text.includes(btnText)) && this.isVisible(button)) {
-        this.log('Found execute button:', text);
-        button.click();
-        return true;
+    // 方法1: SVGアイコン (fa-laptop-code) を含むボタンを検索
+    const svgButtons = document.querySelectorAll('button svg.fa-laptop-code');
+    if (svgButtons.length > 0) {
+      this.log(`Found ${svgButtons.length} buttons with fa-laptop-code icon`);
+      for (const svg of svgButtons) {
+        const button = svg.closest('button');
+        if (button && this.isVisible(button)) {
+          this.log('✓ Found and clicking execute button (by SVG icon fa-laptop-code)');
+          button.click();
+          return true;
+        }
       }
     }
 
+    // 方法2: クラス名で検索 (qfc-a-qfc-button)
+    const qfcButtons = document.querySelectorAll('button.qfc-a-qfc-button.outline');
+    if (qfcButtons.length > 0) {
+      this.log(`Found ${qfcButtons.length} buttons with class qfc-a-qfc-button.outline`);
+      for (const button of qfcButtons) {
+        if (this.isVisible(button)) {
+          this.log('✓ Found and clicking execute button (by class qfc-a-qfc-button.outline)');
+          button.click();
+          return true;
+        }
+      }
+    }
+
+    // 方法3: テキストベースの検索（フォールバック）
+    const buttonTexts = ['試す', '実行', 'Run', 'Execute'];
+    const buttons = document.querySelectorAll('button, a, input[type="button"]');
+    this.log(`Found ${buttons.length} potential buttons for text search`);
+
+    for (const button of buttons) {
+      const text = button.textContent.trim();
+      if (buttonTexts.some(btnText => text.includes(btnText))) {
+        if (this.isVisible(button)) {
+          this.log('✓ Found and clicking execute button (by text):', text);
+          button.click();
+          return true;
+        } else {
+          this.log('✗ Found execute button but not visible:', text);
+        }
+      }
+    }
+
+    this.log('✗ No execute button found');
     return false;
   }
 
   getExecutionResult() {
+    this.log('Attempting to get execution result...');
+
     // 実行結果エリアを探す
     const selectors = [
       '.execution-result',
@@ -1285,31 +1421,61 @@ class QuestNavigator {
       '[class*="output"]'
     ];
 
+    // デバッグ: 各セレクタで見つかった要素の数と状態を表示
     for (const selector of selectors) {
-      const elem = document.querySelector(selector);
-      if (elem && this.isVisible(elem)) {
-        return elem.textContent.trim();
+      const elements = document.querySelectorAll(selector);
+      if (elements.length > 0) {
+        this.log(`Found ${elements.length} elements for selector "${selector}"`);
+        for (const elem of elements) {
+          const visible = this.isVisible(elem);
+          const text = elem.textContent.trim();
+          if (text.length > 0) {
+            this.log(`  Element visible: ${visible}, text preview: "${text.slice(0, 50)}..."`);
+            if (visible) {
+              this.log('✓ Returning result from selector:', selector);
+              return text;
+            }
+          }
+        }
       }
     }
 
+    // #code-console-zone をチェック
     const consoleZone = document.querySelector('#code-console-zone');
     if (consoleZone) {
+      this.log('Found #code-console-zone');
       const zoneText = consoleZone.innerText.trim();
+      const isVisible = this.isVisible(consoleZone);
+      this.log(`  #code-console-zone visible: ${isVisible}, text length: ${zoneText.length}`);
       if (zoneText) {
-        this.log('Console zone text preview:', zoneText.slice(0, 120));
+        this.log('✓ Console zone text preview:', zoneText.slice(0, 120));
         return zoneText;
       }
+    } else {
+      this.log('✗ #code-console-zone not found');
     }
 
+    // <pre> 要素をチェック
     const preElements = document.querySelectorAll('#code-area pre, #code-console-zone pre, pre');
+    this.log(`Found ${preElements.length} <pre> elements`);
+
+    // 最初の3個をプレビュー
+    const prePreview = Array.from(preElements).slice(0, 3).map(pre => ({
+      text: pre.textContent.trim().slice(0, 30),
+      visible: this.isVisible(pre),
+      parent: pre.parentElement?.className || 'no-parent'
+    }));
+    this.log('<pre> elements preview:', prePreview);
+
     for (const pre of preElements) {
       const text = pre.textContent.trim();
-      if (text) {
-        this.log('Found text in <pre> element:', text.slice(0, 120));
+      if (text && this.isVisible(pre)) {
+        this.log('✓ Found text in visible <pre> element:', text.slice(0, 120));
         return text;
       }
     }
 
+    this.log('✗ No execution result found');
     return null;
   }
 

@@ -81,7 +81,7 @@ class AIHelper {
     };
   }
 
-  async answerQuestion(questionText, choices, questionType = 'radio') {
+  async answerQuestion(questionText, choices, questionType = 'radio', images = []) {
     if (!this.apiKey) {
       console.log('[AIHelper] No API key configured, using fallback');
       return this.fallbackAnswer(questionText, choices, questionType);
@@ -91,7 +91,8 @@ class AIHelper {
       const prompt = this.buildPrompt(questionText, choices, questionType);
       const answer = await this.queryGemini(prompt, {
         modelName: this.modelName,
-        maxOutputTokens: 4096
+        maxOutputTokens: 4096,
+        images: images
       });
       return this.parseAnswer(answer, choices, questionType);
     } catch (error) {
@@ -180,6 +181,7 @@ class AIHelper {
 
     let modelName = null;
     let maxOutputTokens = 2048;
+    let images = [];
 
     if (typeof options === 'string') {
       modelName = options;
@@ -189,6 +191,9 @@ class AIHelper {
       }
       if (typeof options.maxOutputTokens === 'number') {
         maxOutputTokens = options.maxOutputTokens;
+      }
+      if (Array.isArray(options.images)) {
+        images = options.images;
       }
     }
 
@@ -201,7 +206,7 @@ class AIHelper {
         'Content-Type': 'application/json',
         'x-goog-api-key': this.apiKey,
       },
-      body: JSON.stringify(this.buildRequestPayload(prompt, maxOutputTokens))
+      body: JSON.stringify(this.buildRequestPayload(prompt, maxOutputTokens, images))
     });
 
     if (!response.ok) {
@@ -273,13 +278,27 @@ class AIHelper {
       .join('\n');
   }
 
-  buildRequestPayload(text, maxOutputTokens = 200) {
+  buildRequestPayload(text, maxOutputTokens = 200, images = []) {
+    const parts = [{ text }];
+
+    // 画像がある場合は追加
+    if (Array.isArray(images) && images.length > 0) {
+      for (const image of images) {
+        if (image.data && image.mimeType) {
+          parts.push({
+            inline_data: {
+              mime_type: image.mimeType,
+              data: image.data
+            }
+          });
+        }
+      }
+    }
+
     return {
       contents: [{
         role: 'user',
-        parts: [{
-          text
-        }]
+        parts
       }],
       generationConfig: {
         temperature: 0.1,
@@ -294,32 +313,44 @@ class AIHelper {
   }
 
   parseAnswer(answer, choices, questionType) {
+    console.log('[AIHelper] Parsing answer, type:', questionType);
+    console.log('[AIHelper] Raw answer:', answer);
+
+    // 回答の最後の行から答えを抽出（本文中の数字を除外するため）
+    const lines = answer.trim().split('\n').filter(line => line.trim().length > 0);
+    const lastLine = lines[lines.length - 1];
+    console.log('[AIHelper] Last line for parsing:', lastLine);
+
     if (questionType === 'radio') {
-      // 単一選択: 最初の数字を抽出
-      const match = answer.match(/\d+/);
+      // 単一選択: 最後の行から最初の数字を抽出
+      const match = lastLine.match(/\d+/);
       if (match) {
         const answerIndex = parseInt(match[0]) - 1; // 1-indexed to 0-indexed
         if (answerIndex >= 0 && answerIndex < choices.length) {
+          console.log('[AIHelper] ✓ Parsed radio answer:', answerIndex);
           return answerIndex;
         }
       }
 
       // パースに失敗した場合はフォールバック
+      console.log('[AIHelper] ✗ Failed to parse radio answer, using fallback');
       return this.fallbackAnswer(null, choices, questionType);
     } else if (questionType === 'checkbox') {
-      // 複数選択: カンマ区切りまたは複数の数字を抽出
-      const numbers = answer.match(/\d+/g);
+      // 複数選択: 最後の行からカンマ区切りまたは複数の数字を抽出
+      const numbers = lastLine.match(/\d+/g);
       if (numbers && numbers.length > 0) {
         const indices = numbers
           .map(n => parseInt(n) - 1) // 1-indexed to 0-indexed
           .filter(i => i >= 0 && i < choices.length);
 
         if (indices.length > 0) {
+          console.log('[AIHelper] ✓ Parsed checkbox answer:', indices);
           return indices;
         }
       }
 
       // パースに失敗した場合はフォールバック
+      console.log('[AIHelper] ✗ Failed to parse checkbox answer, using fallback');
       return this.fallbackAnswer(null, choices, questionType);
     }
 

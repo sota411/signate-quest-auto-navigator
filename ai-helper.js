@@ -389,17 +389,17 @@ class AIHelper {
 
   // ========== コーディング問題用のメソッド ==========
 
-  async completeCodingQuestion(questionText, code, descriptionText = '') {
+  async completeCodingQuestion(questionText, code, descriptionText = '', hintText = '', extraInstructions = '') {
     if (!this.apiKey) {
       console.log('[AIHelper] No API key configured for coding question');
       return code; // そのまま返す
     }
 
     try {
-      const prompt = this.buildCodingPrompt(questionText, code, descriptionText);
+      const prompt = this.buildCodingPrompt(questionText, code, descriptionText, hintText, extraInstructions);
       const answer = await this.queryGemini(prompt, {
         modelName: this.codingModelName,
-        maxOutputTokens: 4096
+        maxOutputTokens: 6144
       });
       return this.extractCompletedCode(answer, code);
     } catch (error) {
@@ -408,17 +408,25 @@ class AIHelper {
     }
   }
 
-  buildCodingPrompt(questionText, code, descriptionText = '') {
+  buildCodingPrompt(questionText, code, descriptionText = '', hintText = '', extraInstructions = '') {
     let prompt = `以下のPythonコードの穴埋め問題に回答してください。\n\n`;
     prompt += `問題文:\n${questionText}\n\n`;
     if (descriptionText) {
       prompt += `参考情報:\n${descriptionText}\n\n`;
     }
+    if (hintText) {
+      prompt += `ヒント:\n${hintText}\n\n`;
+    }
+    if (extraInstructions) {
+      prompt += `必須要件:\n${extraInstructions}\n\n`;
+    }
     prompt += `コード（____の部分を埋めてください）:\n${code}\n\n`;
     prompt += `指示:\n`;
     prompt += `- 元のコードの構造とインデントを維持し、____ のみ適切なPythonコードに置き換えてください\n`;
-    prompt += `- ____の部分に入るコードのみを考えてください\n`;
-    prompt += `- 完成したコード全体を返してください\n`;
+    prompt += `- ____ の部分以外のコード（インポート、コメント、空行を含む）を削除・省略・変更しないでください\n`;
+    prompt += `- 既存の下線（____）は必ず指定された内容で置き換え、置換しない場合でも削除しないでください\n`;
+    prompt += `- ____ の部分に入るコードのみを考え、不要な追加行を挿入しないでください\n`;
+    prompt += `- 完成したコード全体を返してください（元の行順を維持すること）\n`;
     prompt += `- コードブロック（\`\`\`）は使わず、コードのみを返してください\n`;
     return prompt;
   }
@@ -438,15 +446,24 @@ class AIHelper {
     // 改行を正規化
     code = code.replace(/\r\n/g, '\n');
 
-    // もし元のコードと同じ構造なら、そのまま返す
-    if (code.includes('import') && code.includes('print')) {
+    // もしAIから完全なコードが返却され、____が残っていない場合はそのまま採用
+    const hasStructureKeyword = /\b(from|import|def|class|return|for|while)\b/.test(code);
+    const hasComment = code.includes('#');
+    const lineCount = code.split('\n').filter(line => line.trim().length > 0).length;
+    if (!code.includes('____') && (hasStructureKeyword || hasComment || lineCount >= 2)) {
+      const rebuilt = this.rebuildUsingOriginalStructure(originalCode, code);
+      if (rebuilt) {
+        console.log('[AIHelper] ✓ Rebuilt code using original structure');
+        return rebuilt;
+      }
+
       console.log('[AIHelper] ✓ Extracted completed code from AI response');
       return code;
     }
 
     // AIが____の部分だけを返した場合（穴埋めの内容だけ）
     // 例: "nunique, unique" や "nunique()\nunique()" など
-    if (!code.includes('import') && !code.includes('def')) {
+    if (!/\b(from|import|def|class)\b/.test(code)) {
       console.log('[AIHelper] AI returned only fill-in content, replacing ____ in original code');
 
       // カンマ区切りまたは改行で分割
@@ -475,6 +492,37 @@ class AIHelper {
 
     console.log('[AIHelper] ✗ Could not extract code, returning original');
     return originalCode;
+  }
+
+  rebuildUsingOriginalStructure(originalCode, aiCode) {
+    try {
+      if (!originalCode.includes('____')) {
+        return null;
+      }
+
+      const placeholderToken = '__AI_PLACEHOLDER__';
+      const replaced = originalCode.replace(/____/g, placeholderToken);
+      const escaped = replaced.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const whitespaceFlexible = escaped.replace(/\s+/g, '\\s*');
+      const pattern = whitespaceFlexible.replace(new RegExp(placeholderToken, 'g'), '([\\s\\S]+?)');
+      const regex = new RegExp(`^${pattern}$`);
+
+      const match = aiCode.match(regex);
+      if (!match) {
+        console.log('[AIHelper] Could not match AI code to template when rebuilding');
+        return null;
+      }
+
+      const fillValues = match.slice(1).map(value => value.trim());
+      let rebuilt = originalCode;
+      for (const fill of fillValues) {
+        rebuilt = rebuilt.replace('____', fill);
+      }
+      return rebuilt;
+    } catch (error) {
+      console.error('[AIHelper] Failed to rebuild code structure:', error);
+      return null;
+    }
   }
 
   async deriveAnswerFromResult(questionText, executionResult) {

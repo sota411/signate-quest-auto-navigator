@@ -422,7 +422,7 @@ class AIHelper {
     }
     prompt += `コード（____の部分を埋めてください）:\n${code}\n\n`;
     prompt += `指示:\n`;
-    prompt += `- 元のコードの構造とインデントを維持し、____ のみ適切なPythonコードに置き換えてください\n`;
+    prompt += `- 元のコードの構造とインデントを維持し、____ のみ適切なPythonのコードに置き換えてください\n`;
     prompt += `- ____ の部分以外のコード（インポート、コメント、空行を含む）を削除・省略・変更しないでください\n`;
     prompt += `- 既存の下線（____）は必ず指定された内容で置き換え、置換しない場合でも削除しないでください\n`;
     prompt += `- ____ の部分に入るコードのみを考え、不要な追加行を挿入しないでください\n`;
@@ -451,13 +451,7 @@ class AIHelper {
     const hasComment = code.includes('#');
     const lineCount = code.split('\n').filter(line => line.trim().length > 0).length;
     if (!code.includes('____') && (hasStructureKeyword || hasComment || lineCount >= 2)) {
-      const rebuilt = this.rebuildUsingOriginalStructure(originalCode, code);
-      if (rebuilt) {
-        console.log('[AIHelper] ✓ Rebuilt code using original structure');
-        return rebuilt;
-      }
-
-      console.log('[AIHelper] ✓ Extracted completed code from AI response');
+      console.log('[AIHelper] ✓ Using AI code as-is (complete code returned)');
       return code;
     }
 

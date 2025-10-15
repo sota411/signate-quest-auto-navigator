@@ -813,12 +813,13 @@ class QuestNavigator {
       this.log('Question text:', questionText);
 
       // 2. Ace Editorからコードを取得
-      const code = this.getAceEditorContent();
+      const code = await this.getAceEditorContent();
       if (!code) {
         this.log('Could not get code from Ace Editor');
         return false;
       }
       this.log('Original code:', code);
+      this.log('Original code length:', code.length);
 
       // 3. 穴埋め箇所（____）が存在するかチェック
       const blanks = (code.match(/____/g) || []).length;
@@ -846,48 +847,33 @@ class QuestNavigator {
       this.log('Coding requirements derived from hint:', codingRequirements);
 
       let usedGemini = false;
-      let lastMissingRequirements = [];
-      let extraInstructions = '';
 
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          this.updateActivity('AI (Gemini Pro) でコード補完中...');
-          const aiCompleted = await this.aiHelper.completeCodingQuestion(
-            questionText,
-            code,
-            descriptionText,
-            hintText,
-            extraInstructions
-          );
-          this.log('Gemini completion result:', aiCompleted);
-          if (typeof aiCompleted === 'string') {
-            const normalized = aiCompleted.trim();
-            if (normalized && normalized !== code && !normalized.includes('____')) {
-              completedCode = normalized;
-              usedGemini = true;
-              this.log('Completed code by Gemini:', completedCode);
-            }
+      // Geminiでコード補完を試みる（1回のみ、リトライなし）
+      try {
+        this.updateActivity('AI (Gemini Pro) でコード補完中...');
+        const aiCompleted = await this.aiHelper.completeCodingQuestion(
+          questionText,
+          code,
+          descriptionText,
+          hintText,
+          '' // extraInstructions は空
+        );
+        this.log('Gemini completion result:', aiCompleted);
+        if (typeof aiCompleted === 'string') {
+          const normalized = aiCompleted.trim();
+          if (normalized && normalized !== code && !normalized.includes('____')) {
+            completedCode = normalized;
+            usedGemini = true;
+            this.log('✓ Using Gemini code as-is (no modifications)');
           }
-        } catch (error) {
-          this.log('Gemini completion failed, fallback to heuristic fill');
-          this.log('Gemini completion error details:', error);
-          usedGemini = false;
-          break;
         }
-
-        if (!usedGemini) {
-          break;
-        }
-
-        lastMissingRequirements = this.findMissingRequirements(completedCode, codingRequirements);
-        if (lastMissingRequirements.length === 0) {
-          break;
-        }
-
-        extraInstructions = this.buildRequirementInstruction(lastMissingRequirements);
-        this.log('Requirements missing after Gemini completion, retrying with extra instructions:', extraInstructions);
+      } catch (error) {
+        this.log('Gemini completion failed, fallback to heuristic fill');
+        this.log('Gemini completion error details:', error);
+        usedGemini = false;
       }
 
+      // Geminiが失敗した場合のみフォールバック
       if (!usedGemini) {
         const fillValues = this.getCodingFillValues(
           code,
@@ -913,15 +899,6 @@ class QuestNavigator {
           this.log('Completed code still contains blanks, aborting coding question handling');
           return false;
         }
-      } else if (lastMissingRequirements.length > 0) {
-        completedCode = this.appendRequirementStatements(completedCode, lastMissingRequirements);
-        this.log('Appended missing requirement statements after Gemini attempt:', lastMissingRequirements);
-      }
-
-      const remainingRequirements = this.findMissingRequirements(completedCode, codingRequirements);
-      if (remainingRequirements.length > 0) {
-        completedCode = this.appendRequirementStatements(completedCode, remainingRequirements);
-        this.log('Final requirement enforcement added statements:', remainingRequirements);
       }
 
       // 5. Ace Editorにコードを入力
@@ -1173,7 +1150,8 @@ class QuestNavigator {
       requirements.add('plt.imshow(train_imgs[i])');
     }
 
-    if (/plt\.show/.test(sourceText) || /可視化/.test(sourceText) || /表示/.test(sourceText)) {
+    // plt.show() は明示的に記載されている場合のみ追加（可視化・表示だけでは判断しない）
+    if (/plt\.show\(\)/.test(sourceText)) {
       requirements.add('plt.show()');
     }
 
@@ -1620,10 +1598,24 @@ class QuestNavigator {
     return lines.length > 0 ? lines[0] : null;
   }
 
-  getAceEditorContent() {
+  async getAceEditorContent() {
     this.log('Attempting to get Ace Editor content...');
 
-    // まず、エディターインスタンスの取得を試みる（最優先）
+    // 方法0: background script経由でMAINワールドから取得（最優先・最確実）
+    try {
+      this.log('Trying to get content via background script (MAIN world)...');
+      const response = await chrome.runtime.sendMessage({ action: 'getAceEditorContent' });
+      if (response && response.success && response.content) {
+        this.log('✓ Got full content from background script (MAIN world)');
+        this.log('Content length:', response.content.length);
+        return response.content;
+      }
+      this.log('Background script method did not succeed, falling back');
+    } catch (e) {
+      this.log('✗ Background script method failed:', e.message);
+    }
+
+    // 方法1: キャッシュされたエディターインスタンスから取得
     this.cacheEditorInstance();
 
     if (this.editorInstance && this.editorInstance.getValue) {
@@ -1638,7 +1630,7 @@ class QuestNavigator {
       }
     }
 
-    // 方法1: グローバルaceオブジェクトから取得
+    // 方法2: グローバルaceオブジェクトから取得
     if (typeof ace !== 'undefined' && ace.edit) {
       this.log('✓ Found global ace object');
 
@@ -1670,23 +1662,6 @@ class QuestNavigator {
       } catch (e) {
         this.log('Could not get editor via ace.edit(element):', e.message);
       }
-    }
-
-    // 方法2: テキストレイヤーから直接取得（読み取り専用）
-    const textLayer = document.querySelector('.ace_text-layer');
-    if (textLayer) {
-      const lines = textLayer.querySelectorAll('.ace_line');
-      if (lines.length > 0) {
-        const content = Array.from(lines)
-          .map(line => line.textContent.replace(/\u00a0/g, ' '))
-          .join('\n');
-        this.log('✓ Got content from .ace_text-layer (line-based):', content.substring(0, 50) + '...');
-        return content;
-      }
-
-      const fallbackContent = textLayer.textContent.replace(/\u00a0/g, ' ');
-      this.log('✓ Got content from .ace_text-layer (fallback):', fallbackContent.substring(0, 50) + '...');
-      return fallbackContent;
     }
 
     // 方法3: #operation-editor から取得

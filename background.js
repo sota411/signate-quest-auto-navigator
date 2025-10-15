@@ -43,6 +43,62 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true; // 非同期レスポンスを許可
   }
 
+  if (request.action === 'getAceEditorContent' && sender.tab && sender.tab.id) {
+    chrome.scripting.executeScript({
+      target: { tabId: sender.tab.id },
+      func: () => {
+        const getValue = (editor) => {
+          if (!editor || typeof editor.getValue !== 'function') {
+            return null;
+          }
+          try {
+            return editor.getValue();
+          } catch (e) {
+            return null;
+          }
+        };
+
+        const operationEditor = document.querySelector('#operation-editor');
+        if (operationEditor?.env?.editor) {
+          const content = getValue(operationEditor.env.editor);
+          if (content !== null) {
+            return content;
+          }
+        }
+
+        if (window.ace?.edit) {
+          try {
+            const editor = window.ace.edit('operation-editor');
+            const content = getValue(editor);
+            if (content !== null) {
+              return content;
+            }
+          } catch (e) {
+            // ignore
+          }
+        }
+
+        const aceElements = document.querySelectorAll('.ace_editor');
+        for (const elem of aceElements) {
+          const editor = elem?.env?.editor;
+          const content = getValue(editor);
+          if (content !== null) {
+            return content;
+          }
+        }
+
+        return null;
+      },
+      world: 'MAIN'
+    }).then(results => {
+      const content = Array.isArray(results) && results.length > 0 ? results[0]?.result : null;
+      sendResponse({ success: !!content, content: content || null });
+    }).catch(error => {
+      sendResponse({ success: false, error: error.message });
+    });
+    return true;
+  }
+
   if (request.action === 'setAceEditorContent' && sender.tab && sender.tab.id) {
     chrome.scripting.executeScript({
       target: { tabId: sender.tab.id },
